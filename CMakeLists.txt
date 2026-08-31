@@ -14,14 +14,37 @@ option(EMBED_RESOURCES "Embed internal resources in the library executable" OFF)
 # Compile flags
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_FLAGS_DEBUG "-Wall -g -DDEBUG")
-set(CMAKE_CXX_FLAGS_RELEASE "-Wno-stringop-overflow -O3 -DNDEBUG")
+if(MSVC)
+    set(CMAKE_CXX_FLAGS_DEBUG "/Zi /Od /DDEBUG")
+    set(CMAKE_CXX_FLAGS_RELEASE "/O2 /DNDEBUG")
+else()
+    set(CMAKE_CXX_FLAGS_DEBUG "-Wall -g -DDEBUG")
+    set(CMAKE_CXX_FLAGS_RELEASE "-Wno-stringop-overflow -O3 -DNDEBUG")
+endif()
 set(OpenGL_GL_PREFERENCE "GLVND")
+
+# Platform specific configuration
+set(STONEFISH_LIB_TYPE SHARED)
+if(WIN32)
+    # _USE_MATH_DEFINES: MSVC does not define M_PI and friends without it.
+    # SDL_MAIN_HANDLED: stops SDL2 from renaming main() to SDL_main() (inherited by the tests).
+    add_compile_definitions(_USE_MATH_DEFINES SDL_MAIN_HANDLED)
+    # A DLL exports no symbols without __declspec(dllexport) annotations, so build a static
+    # library on Windows instead. The export property is set for the case of switching back.
+    set(STONEFISH_LIB_TYPE STATIC)
+    set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
+endif()
 
 # Find required libraries
 find_package(OpenGL REQUIRED)
 find_package(SDL2 REQUIRED)
 find_package(Freetype REQUIRED)
+
+if(WIN32)
+    # SDL_MAIN_HANDLED is defined above, so the applications provide their own main() and the
+    # SDL2main wrapper must not be linked - it supplies a WinMain() calling SDL_main().
+    list(REMOVE_ITEM SDL2_LIBRARIES SDL2::SDL2main)
+endif()
 
 # Generate C++ code from all resource files (optional)
 set(RESOURCES) # This variable stores array of generated resource files
@@ -55,7 +78,7 @@ set(BULLET_FLAGS BT_EULER_DEFAULT_ZYX BT_USE_DOUBLE_PRECISION)
 # Define targets
 if(BUILD_TESTS)
     # Create tests and use library locally (has to be disabled when installing system-wide!)
-    add_library(Stonefish_test SHARED
+    add_library(Stonefish_test ${STONEFISH_LIB_TYPE}
         ${SOURCES} 
         ${SOURCES_3RD} 
         ${RESOURCES}
@@ -75,7 +98,7 @@ if(BUILD_TESTS)
     add_subdirectory(Tests)
 else()
     # Create shared library to be installed system-wide
-    add_library(Stonefish SHARED 
+    add_library(Stonefish ${STONEFISH_LIB_TYPE} 
         ${SOURCES} 
         ${SOURCES_3RD} 
         ${RESOURCES}

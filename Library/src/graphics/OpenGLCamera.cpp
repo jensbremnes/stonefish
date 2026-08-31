@@ -119,11 +119,10 @@ OpenGLCamera::OpenGLCamera(GLint x, GLint y, GLint width, GLint height, glm::vec
     //---- Tonemapping ----
     histogramBins = 256;
     histogramRange = glm::vec2(-1.f,11.f);
-    GLuint histogram[histogramBins];
-    memset(histogram, 0, histogramBins * sizeof(GLuint));
+    std::vector<GLuint> histogram(histogramBins, 0); //Variable length arrays are not standard C++
     glGenBuffers(1, &histogramSSBO);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, histogramSSBO);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, histogramBins * sizeof(GLuint), histogram, GL_STATIC_DRAW);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, histogramBins * sizeof(GLuint), histogram.data(), GL_STATIC_DRAW);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     
     GLfloat zero = 1.0f;

@@ -30,22 +30,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdarg>
+#include <cmath>
 #include <ctime>
 #include <chrono>
-
-#if defined(__linux__)
-    #include <unistd.h>
-    #include <fstream>
-    #include <string>
-    #include <set>
-#elif defined(__APPLE__)
-    #include <unistd.h>
-    #include <sys/sysctl.h>
-    #include <Carbon/Carbon.h>
-#elif defined(_WIN32)
-    #include <windows.h>
-    #include <vector>
-#endif
+#include <string>
+#include <thread>
 
 #include "core/GraphicalSimulationApp.h"
 #include "graphics/OpenGLDataStructs.h"
@@ -53,65 +42,12 @@
 namespace sf
 {
 
-inline unsigned int GetPhysicalCores() 
-{
-#if defined(_WIN32)
-    // Windows: Use GetLogicalProcessorInformation
-    DWORD length = 0;
-    GetLogicalProcessorInformation(nullptr, &length);
-    std::vector<SYSTEM_LOGICAL_PROCESSOR_INFORMATION> buffer(length / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION));
-    
-    if (GetLogicalProcessorInformation(buffer.data(), &length)) {
-        unsigned int cores = 0;
-        for (const auto& info : buffer) 
-        {
-            if (info.Relationship == RelationProcessorCore) 
-                cores++;
-        }
-        return cores > 0 ? cores : 1;
-    }
-#elif defined(__APPLE__)
-    // macOS: Use sysctlbyname
-    int cores = 0;
-    size_t size = sizeof(cores);
-    if (sysctlbyname("hw.physicalcpu", &cores, &size, nullptr, 0) == 0) 
-    {
-        return cores;
-    }
-#elif defined(__linux__)
-    // Linux: Read /proc/cpuinfo and count unique core IDs per physical ID
-    std::ifstream file("/proc/cpuinfo");
-    if (file.is_open()) 
-    {
-        std::string line;
-        std::set<std::string> uniqueCores;
-        std::string currentPhysId = "0";
-        std::string currentCoreId = "";
-
-        while (std::getline(file, line)) 
-        {
-            if (line.rfind("physical id", 0) == 0) 
-            {
-                currentPhysId = line.substr(line.find(':') + 1);
-            } 
-            else if (line.rfind("core id", 0) == 0) 
-            {
-                currentCoreId = line.substr(line.find(':') + 1);
-                // Pair them up to handle multi-socket machines correctly
-                uniqueCores.insert(currentPhysId + "_" + currentCoreId);
-            }
-        }
-        if (!uniqueCores.empty()) 
-        {
-            return uniqueCores.size();
-        }
-    }
-#endif
-
-    // Fallback if OS-specific queries fail
-    unsigned int logical = std::thread::hardware_concurrency();
-    return logical > 0 ? logical : 1; 
-}
+//! A function returning the number of physical processor cores.
+/*!
+    Implemented in SystemUtil.cpp, to keep the platform headers (in particular <windows.h>,
+    which leaks the ERROR, TRANSPARENT, near and far macros) out of this widely included header.
+*/
+unsigned int GetPhysicalCores();
 
 inline int64_t GetTimeInMicroseconds()
 {
@@ -125,15 +61,6 @@ inline int64_t GetTimeInNanoseconds()
     return std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
 }
 
-inline void GetCWD(char* buffer, int length)
-{
-#ifdef _MSC_VER
-	GetCurrentDirectory(length, buffer);
-#else
-    getcwd(buffer, length);
-#endif
-}
-
 inline std::string GetShaderPath()
 {
     return ((GraphicalSimulationApp*)SimulationApp::getApp())->getShaderPath();
@@ -142,66 +69,6 @@ inline std::string GetShaderPath()
 inline std::string GetDataPath()
 {
     return SimulationApp::getApp()->getDataPath();
-}
-
-inline const char* GetDataPathPrefix(const char* directory)
-{
-    static char dataPathPrefix[PATH_MAX];
-    
-#ifdef __linux__
-
-#elif __APPLE__    
-    CFStringRef dir = CFStringCreateWithCString(CFAllocatorGetDefault(), directory, kCFStringEncodingMacRoman);
-    
-    CFURLRef datafilesURL = CFBundleCopyResourceURL(CFBundleGetMainBundle(), dir, 0, 0);
-    
-    CFURLGetFileSystemRepresentation(datafilesURL, true, reinterpret_cast<UInt8*>(dataPathPrefix), PATH_MAX);
-    
-    if(datafilesURL != NULL)
-        CFRelease(datafilesURL);
-    
-    CFRelease(dir);
-#else //WINDOWS
-    char* envDataPath = 0;
-    
-    // get data path from environment var
-    envDataPath = getenv(DATAPATH_VAR_NAME);
-    
-    // set data path prefix / base directory.  This will
-    // be either from an environment variable, or from
-    // a compiled in default based on original configure
-    // options
-    if (envDataPath != 0)
-        strcpy(dataPathPrefix, envDataPath);
-    else
-        strcpy(dataPathPrefix, CEGUI_SAMPLE_DATAPATH);
-#endif
-    
-    return dataPathPrefix;
-}
-
-//Extensions
-inline bool CheckForExtension(const char* extensionName)
-{
-#ifdef _MSC_VER
-	return glewIsSupported(extensionName);
-#else
-    char* extensions = (char*)glGetString(GL_EXTENSIONS);
-    if(extensions == NULL)
-        return false;
-    
-    size_t extNameLen = strlen(extensionName);
-    char* end = extensions + strlen(extensions);
-    
-    while (extensions < end)
-    {
-        size_t n = strcspn(extensions, " ");
-        if((extNameLen == n) && (strncmp(extensionName, extensions, n) == 0))
-            return true;
-        extensions += (n+1);
-    }
-    return false;
-#endif
 }
 
 //Random functions
@@ -246,4 +113,3 @@ inline float grandom(float mean, float stdDeviation, long *seed)
 }
 
 }
-

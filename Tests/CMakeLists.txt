@@ -32,3 +32,20 @@ target_link_libraries(LearningTest Stonefish_test)
 
 add_executable(CableTest CableTest/main.cpp CableTest/CableTestApp.cpp CableTest/CableTestManager.cpp)
 target_link_libraries(CableTest Stonefish_test)
+
+if(WIN32)
+    # Copy the runtime DLLs next to the executables, so they can be started without the MSYS2
+    # ucrt64 bin directory on PATH, and the directory can be moved to a machine without MSYS2.
+    get_filename_component(MINGW_BIN "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    add_custom_target(BundleRuntimeDLLs ALL
+        COMMAND ${CMAKE_COMMAND} -DEXE_DIR=$<TARGET_FILE_DIR:ConsoleTest>
+                                 -DMINGW_BIN=${MINGW_BIN}
+                                 -P "${CMAKE_CURRENT_SOURCE_DIR}/BundleRuntimeDLLs.cmake"
+        COMMENT "Bundling runtime DLLs next to the test executables"
+        VERBATIM
+    )
+    add_dependencies(BundleRuntimeDLLs
+        ConsoleTest CameraTest FallingTest FloatingTest FlyingTest JointsTest
+        SlidingTest UnderwaterTest FluidDynamicsTest LearningTest CableTest
+    )
+endif()
