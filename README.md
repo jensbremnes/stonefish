@@ -36,7 +36,7 @@ SDL2, Freetype and GLM are the only external dependencies.
 
 #### Getting started
 
-**Run the examples.** The eleven example applications land in `build/Tests/`, together with the
+**Run the examples.** The twelve example applications land in `build/Tests/`, together with the
 sixteen runtime DLLs they depend on (SDL2, Freetype and the MinGW / HarfBuzz / GLib chain), which
 the build copies there automatically. So they start from any shell, or by double-clicking them in
 Explorer - MSYS2 does not have to be on `PATH`, and the folder can be copied to a machine that has
@@ -52,6 +52,7 @@ $ ./build/Tests/UnderwaterTest.exe
 | `FallingTest` | Rigid bodies, collisions, materials |
 | `FloatingTest` | Surface vessel, buoyancy, a thruster - the shortest example to read |
 | `UnderwaterTest` | Full ocean, an AUV, sonars and cameras - the heaviest |
+| `BlueROV2Test` | BlueROV2 Heavy ROV, 8 thrusters, keyboard-flown through a 6 DOF thrust allocation |
 | `FlyingTest`, `SlidingTest`, `JointsTest`, `CableTest` | Aerodynamics, friction, joints, cables |
 | `FluidDynamicsTest`, `CameraTest`, `LearningTest` | Hydrodynamics, vision sensors, ML interfacing |
 
@@ -64,6 +65,9 @@ $ ./build/Tests/UnderwaterTest.exe
 | Mouse drag | Rotate the camera (trackball); wheel zooms |
 | `H` / `K` / `P` / `C` | Toggle the HUD / keymap / performance monitor / console |
 | `Esc` | Quit |
+
+In `BlueROV2Test` the keyboard flies the **vehicle** instead of the camera: `W`/`S` surge, `A`/`D` yaw, `Q`/`E` heave, `,`/`.` sway, arrows pitch/roll trim, `Space` all-stop. Press `Tab` to hand the keys back to the camera and back again; the active mode is shown on the HUD along with speed, depth and attitude. Camera mouse control (drag to rotate, wheel to zoom) works in both modes.
+
 
 **Write your own simulation.** Subclass `sf::SimulationManager`, implement `BuildScenario()`, and
 hand it to a `sf::GraphicalSimulationApp`:

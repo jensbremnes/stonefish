@@ -33,6 +33,9 @@ target_link_libraries(LearningTest Stonefish_test)
 add_executable(CableTest CableTest/main.cpp CableTest/CableTestApp.cpp CableTest/CableTestManager.cpp)
 target_link_libraries(CableTest Stonefish_test)
 
+add_executable(BlueROV2Test BlueROV2Test/main.cpp BlueROV2Test/BlueROV2TestApp.cpp BlueROV2Test/BlueROV2TestManager.cpp)
+target_link_libraries(BlueROV2Test Stonefish_test)
+
 if(WIN32)
     # Copy the runtime DLLs next to the executables, so they can be started without the MSYS2
     # ucrt64 bin directory on PATH, and the directory can be moved to a machine without MSYS2.
@@ -47,5 +50,6 @@ if(WIN32)
     add_dependencies(BundleRuntimeDLLs
         ConsoleTest CameraTest FallingTest FloatingTest FlyingTest JointsTest
         SlidingTest UnderwaterTest FluidDynamicsTest LearningTest CableTest
+        BlueROV2Test
     )
 endif()
