@@ -26,6 +26,7 @@
 #include <core/Robot.h>
 #include <entities/SolidEntity.h>
 #include <graphics/IMGUI.h>
+#include <sensors/vision/ColorCamera.h>
 #include <core/Console.h>
 
 #include <algorithm>
@@ -75,6 +76,10 @@ namespace
     };
 
     const char* ROBOT_NAME = "BLUEROV2";
+    const char* CAMERA_NAME = "camera";
+
+    //Gap between the small camera inset and the window edge, in pixels
+    const unsigned int MARGIN = 10;
 
     inline sf::Scalar Clamp(sf::Scalar v)
     {
@@ -91,8 +96,13 @@ namespace
 BlueROV2TestApp::BlueROV2TestApp(std::string dataDirPath, sf::RenderSettings s, sf::HelperSettings h, BlueROV2TestManager* sim)
     : GraphicalSimulationApp("BlueROV2Test", dataDirPath, s, h, sim),
       vehicleControl_(true),
+      cameraView_(CameraView::SMALL),
+      camera_(nullptr),
+      cameraResolved_(false),
       surge_(0), sway_(0), heave_(0), roll_(0), pitch_(0), yaw_(0)
 {
+    //The robot does not exist yet - the scenario is built during Init(), after construction -
+    //so the camera is resolved on the first frame instead, in ProcessInputs().
 }
 
 void BlueROV2TestApp::KeyDown(SDL_Event* event)
@@ -102,6 +112,20 @@ void BlueROV2TestApp::KeyDown(SDL_Event* event)
     {
         vehicleControl_ = !vehicleControl_;
         cInfo(vehicleControl_ ? "Keyboard now pilots the vehicle." : "Keyboard now moves the camera.");
+        return;
+    }
+
+    //V cycles the forward camera inset. Handled before the swallow list below, so it works
+    //in both control modes; the base class does not bind it.
+    if(event->key.keysym.sym == SDLK_v)
+    {
+        switch(cameraView_)
+        {
+            case CameraView::OFF:   cameraView_ = CameraView::SMALL; cInfo("Camera view: small."); break;
+            case CameraView::SMALL: cameraView_ = CameraView::LARGE; cInfo("Camera view: large."); break;
+            case CameraView::LARGE: cameraView_ = CameraView::OFF;   cInfo("Camera view: off."); break;
+        }
+        ApplyCameraView();
         return;
     }
 
@@ -170,6 +194,70 @@ void BlueROV2TestApp::AllocateThrust()
     }
 }
 
+void BlueROV2TestApp::ApplyCameraView()
+{
+    if(!cameraResolved_)
+    {
+        cameraResolved_ = true;
+
+        sf::Robot* rov = getSimulationManager()->getRobot(ROBOT_NAME);
+        if(rov != nullptr)
+        {
+            //The parser prefixes sensor names with the robot name, and a robot's sensors live
+            //on the robot rather than in the manager's list
+            sf::Sensor* s = rov->getSensor(std::string(ROBOT_NAME) + "/" + CAMERA_NAME);
+            if(s == nullptr)
+                s = rov->getSensor(CAMERA_NAME);
+            camera_ = dynamic_cast<sf::ColorCamera*>(s);
+        }
+
+        if(camera_ == nullptr)
+            cError("Camera '%s' not found - the camera view is unavailable.", CAMERA_NAME);
+    }
+
+    if(camera_ == nullptr)
+        return;
+
+    if(cameraView_ == CameraView::OFF)
+    {
+        camera_->setDisplayOnScreen(false, 0, 0, 1.f);
+        return;
+    }
+
+    //Placement is from the TOP left, the same origin as the IMGUI panels: setDisplayOnScreen
+    //feeds OpenGLContent::DrawTexturedQuad, which flips into GL coordinates itself.
+    unsigned int resX, resY;
+    camera_->getResolution(resX, resY);
+    const unsigned int w = getWindowWidth();
+    const unsigned int h = getWindowHeight();
+
+    float scale;
+    if(cameraView_ == CameraView::LARGE)
+        scale = (float)w / (float)resX; //Full window width, HUD panels stay visible underneath
+    else
+        scale = 0.35f;
+
+    const unsigned int dispW = (unsigned int)(resX * scale);
+    const unsigned int dispH = (unsigned int)(resY * scale);
+
+    if(cameraView_ == CameraView::LARGE) //Full width, along the bottom edge
+        camera_->setDisplayOnScreen(true, 0, h > dispH ? h - dispH : 0, scale);
+    else //Bottom right corner, clear of the sliders and the telemetry panel
+        camera_->setDisplayOnScreen(true,
+                                    w > dispW + MARGIN ? w - dispW - MARGIN : 0,
+                                    h > dispH + MARGIN ? h - dispH - MARGIN : 0,
+                                    scale);
+}
+
+void BlueROV2TestApp::ProcessInputs()
+{
+    if(!cameraResolved_)
+        ApplyCameraView();
+
+    ReadKeyboard();
+    AllocateThrust();
+}
+
 void BlueROV2TestApp::DoTelemetry()
 {
     sf::Robot* rov = getSimulationManager()->getRobot(ROBOT_NAME);
@@ -188,7 +276,7 @@ void BlueROV2TestApp::DoTelemetry()
 
     const GLfloat x = 10.f;
     const GLfloat yy = 350.f;
-    getGUI()->DoPanel(x, yy, 250.f, 130.f);
+    getGUI()->DoPanel(x, yy, 250.f, 150.f);
 
 
     char buf[128];
@@ -203,14 +291,19 @@ void BlueROV2TestApp::DoTelemetry()
     snprintf(buf, sizeof(buf), "R %6.1f  P %6.1f  Y %6.1f deg",
              (double)(r * 180.0 / M_PI), (double)(p * 180.0 / M_PI), (double)(y * 180.0 / M_PI));
     getGUI()->DoLabel(x + 10.f, yy + 94.f, std::string(buf));
+    const char* view = cameraView_ == CameraView::OFF ? "OFF"
+                     : (cameraView_ == CameraView::SMALL ? "SMALL" : "LARGE");
+    snprintf(buf, sizeof(buf), "CAMERA: %s  [V]", view);
+    getGUI()->DoLabel(x + 10.f, yy + 114.f, std::string(buf));
 }
 
 void BlueROV2TestApp::DoHUD()
 {
     GraphicalSimulationApp::DoHUD();
 
-    ReadKeyboard();
-
+    //Piloting itself runs in ProcessInputs(), so that hiding the HUD does not stop the vehicle.
+    //The sliders below are still a second way in: the keyboard simply overwrites them every
+    //frame while in vehicle mode.
     sf::Uid id;
     id.owner = 10;
 
@@ -228,5 +321,4 @@ void BlueROV2TestApp::DoHUD()
     yaw_   = getGUI()->DoSlider(id, 180.f, 285.f, 250.f, sf::Scalar(-1), sf::Scalar(1), yaw_, "Yaw  [A/D]");
 
     DoTelemetry();
-    AllocateThrust();
 }

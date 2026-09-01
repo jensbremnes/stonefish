@@ -138,6 +138,29 @@
       is z = +0.078. Re-datuming to either makes the trim markedly worse, so 0.0575 is kept, but
       it is an anchor to a deleted asset rather than a measurement.
 
+    ============================= CAMERA AND LIGHTING =============================
+    A vision sensor looks along the +Z axis of its own frame, with -Y as image up
+    (Camera::UpdateTransform in Library/src/sensors/vision/Camera.cpp). That is a Z-forward
+    optical convention sitting inside an X-forward NED body frame, so rpy="0 0 0" does NOT
+    give a forward-looking camera - it gives one aimed straight DOWN and rolled 90 deg, which
+    is what this file had while claiming otherwise. The same applies to <light>, whose beam
+    axis is also its own +Z (Light::UpdateTransform).
+
+    To aim a sensor forward and tilted down by an angle a, keeping image-right on starboard:
+        rpy = (pi/2 - a, 0, pi/2)
+    Rz(pi/2)*Rx(pi/2 - a) then has columns X = starboard (image right), Y = down-ish
+    (so -Y is up), Z = forward, tilted down by a. The camera uses a = 0, the two Lumens
+    a = 15 deg so they light the water the camera is looking into.
+
+    The camera sits at x = 0.24, just clear of the bow: the visual hull reaches x = 0.222, and
+    x = 0.22 as originally written put the viewpoint inside the dome. Its height z = 0 is the
+    centreline of the upper electronics enclosure (the bow geometry splits into two tubes, at
+    z = -0.04..0.05 and z = 0.10..0.14), which is where the real camera looks out.
+
+    The picture is NOT displayed by this file. Colour cameras have no <display> element in
+    ScenarioParser - the only route is Camera::setDisplayOnScreen from C++, which BlueROV2Test
+    does, cycling the inset size on the V key.
+
     ============================== MEASURED BEHAVIOUR ==============================
     Full surge, free-running, fully submerged, still water:
         top speed                      1.83 m/s    (published ~1.5; see thruster note above)
@@ -462,26 +485,29 @@
 			<noise ned_position="0.5"/>
 		</sensor>
 
-		<!-- Forward looking low-light camera, as on a standard BlueROV2 -->
+		<!-- Forward looking low-light camera, as on a standard BlueROV2. The rpy aims the
+		     sensor's +Z view axis along body +X - see CAMERA AND LIGHTING in the header. -->
 		<sensor name="camera" type="camera" rate="30.0">
 			<link name="Vehicle"/>
-			<origin rpy="0.0 0.0 0.0" xyz="0.22 0.0 0.0"/>
+			<origin rpy="${pi/2} 0.0 ${pi/2}" xyz="0.24 0.0 0.0"/>
 			<specs resolution_x="1280" resolution_y="720" horizontal_fov="80.0"/>
 		</sensor>
 
-		<!-- Lumen-style illumination, forward and slightly outboard -->
+		<!-- Lumen-style illumination, forward and slightly outboard, tilted 15 deg down.
+		     A light emits along its own +Z, so this needs the same rpy treatment as the
+		     camera; at rpy="0 0 0" both beams pointed straight at the seabed. -->
 		<light name="LightPort">
 			<link name="Vehicle"/>
 			<specs illuminance="15000.0" radius="0.02" cone_angle="90.0"/>
 			<color temperature="5000.0"/>
-			<origin rpy="0.0 0.0 0.0" xyz="0.20 -0.13 -0.04"/>
+			<origin rpy="${pi/2 - 0.2618} 0.0 ${pi/2}" xyz="0.20 -0.13 -0.04"/>
 		</light>
 
 		<light name="LightStarboard">
 			<link name="Vehicle"/>
 			<specs illuminance="15000.0" radius="0.02" cone_angle="90.0"/>
 			<color temperature="5000.0"/>
-			<origin rpy="0.0 0.0 0.0" xyz="0.20 0.13 -0.04"/>
+			<origin rpy="${pi/2 - 0.2618} 0.0 ${pi/2}" xyz="0.20 0.13 -0.04"/>
 		</light>
 
 		<world_transform rpy="0.0 0.0 0.0" xyz="$(arg robot_position)"/>
