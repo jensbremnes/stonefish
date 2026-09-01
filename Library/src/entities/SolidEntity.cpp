@@ -1265,25 +1265,26 @@ void SolidEntity::CorrectHydrodynamicForces(Ocean* ocn, Vector3& _Fdq, Vector3& 
 {
     Matrix3 toOrigin = T_O.getBasis().inverse();
 
+    //A torque is scaled by the coefficient blended from the direction of the force that
+    //produces it, NOT from the direction of the torque itself. The per-face drag
+    //quadratic = vc*(-vc_n)*A is always parallel to vc, so in pure translation every face
+    //shares one blend coefficient c and sum(r_i x c*q_i) == c * sum(r_i x q_i) == c*Tdq:
+    //scaling by Fdqc is then exact. Blending on the torque direction instead makes the
+    //coefficient of a moment depend on the axis it acts about, which for an anisotropic Cd
+    //rescales the body's effective centre of drag by an arbitrary factor - e.g. a surge
+    //force picks up Cd.x while the pitching moment it induces picks up Cd.y.
+    //Approximate under rotation, and for skin friction (whose per-face vt directions differ).
     Vector3 Fdq = toOrigin * _Fdq;
     Fdq = Fdq.safeNormalize();
     Scalar Fdqc = btFabs(Fdq.getX()) * fdCd.getX() + btFabs(Fdq.getY()) * fdCd.getY() + btFabs(Fdq.getZ()) * fdCd.getZ();
-    _Fdq = Scalar(0.5) * ocn->getLiquid().density * Fdqc * _Fdq; //0.5*rho*Cd*S*v2 from drag equation    
-
-    Vector3 Tdq = toOrigin * _Tdq;
-    Tdq = Tdq.safeNormalize();
-    Scalar Tdqc = btFabs(Tdq.getX()) * fdCd.getX() + btFabs(Tdq.getY()) * fdCd.getY() + btFabs(Tdq.getZ()) * fdCd.getZ();
-    _Tdq = Scalar(0.5) * ocn->getLiquid().density * Tdqc * _Tdq; //0.5*rho*Cd*S*v2 from drag equation
+    _Fdq = Scalar(0.5) * ocn->getLiquid().density * Fdqc * _Fdq; //0.5*rho*Cd*S*v2 from drag equation
+    _Tdq = Scalar(0.5) * ocn->getLiquid().density * Fdqc * _Tdq; //Torque of the same force
 
     Vector3 Fdf = toOrigin * _Fdf;
     Fdf = Fdf.safeNormalize();
     Scalar Fdfc = btFabs(Fdf.getX()) * fdCf.getX() + btFabs(Fdf.getY()) * fdCf.getY() + btFabs(Fdf.getZ()) * fdCf.getZ(); 
     _Fdf = ocn->getLiquid().density * Fdfc * _Fdf; //rho*Cf*S*v from viscous drag equation
-    
-    Vector3 Tdf = toOrigin * _Tdf;
-    Tdf = Tdf.safeNormalize();
-    Scalar Tdfc = btFabs(Tdf.getX()) * fdCf.getX() + btFabs(Tdf.getY()) * fdCf.getY() + btFabs(Tdf.getZ()) * fdCf.getZ();
-    _Tdf = ocn->getLiquid().density * Tdfc * _Tdf; //rho*S*v from viscous drag equation
+    _Tdf = ocn->getLiquid().density * Fdfc * _Tdf; //Torque of the same force
 }
 
 void SolidEntity::ComputeHydrodynamicForcesSurface(const HydrodynamicsSettings& settings, const Mesh* mesh, Ocean* ocn, const Transform& T_CG, const Transform& T_C,
@@ -1667,8 +1668,7 @@ void SolidEntity::ComputeHydrodynamicForcesSurface(const HydrodynamicsSettings& 
             
             if(vc_n < -1e-12f) //If liquid is approaching the surface
             {
-                GLfloat vmag2 = glm::length2(vc);
-                glm::vec3 quadratic = vc * sqrtf(vmag2) * -vc_n * A;
+                glm::vec3 quadratic = vc * -vc_n * A; //|v|^2*A*cos(a), along the flow direction
                 Fdq += quadratic;
                 Tdq += glm::cross(fc - p, quadratic);
             }
@@ -1775,8 +1775,7 @@ void SolidEntity::ComputeHydrodynamicForcesSubmerged(const Mesh* mesh, Ocean* oc
         
         if(vc_n < -1e-12f) //If liquid is approaching the surface
         {
-            GLfloat vmag2 = glm::length2(vc);
-            glm::vec3 quadratic = vc * sqrtf(vmag2) * -vc_n * A;
+            glm::vec3 quadratic = vc * -vc_n * A; //|v|^2*A*cos(a), along the flow direction
             Fdq += quadratic;
             Tdq += glm::cross(fc - p, quadratic);
         }

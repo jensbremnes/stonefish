@@ -38,19 +38,69 @@
     CG/CB separation that keeps the vehicle upright then comes from <cg> on the hull.
 
     ============================== DRAG MODELLING ==============================
-    Stonefish does not take Fossen matrices. SolidEntity.cpp computes
-        F = 0.5 * rho * Cd * S * v^2
-    with S from the actual geometry, so quadratic_drag is per-axis Cd and maps to Wu as
-        Cd_axis = 2 * |X_axis| / (rho * S_axis)
-    Surge Cd was CALIBRATED by measuring terminal velocity against the published 1.5 m/s top
-    speed, since S is computed internally from the mesh. Sway and heave keep Wu's force ratios
-    21.66/18.18 and 36.99/18.18, converted through their own projected areas.
+    Stonefish does not take Fossen matrices. It integrates pressure and shear per mesh face
+    (SolidEntity::ComputeHydrodynamicForcesSubmerged), which for a body in pure translation
+    reduces to
+        form drag       F = 0.5 * rho * Cd * A_proj * v^2
+        skin friction   F =       rho * Cf * S_eff  * v
+    where A_proj is the projected area of the physics mesh along the flow and S_eff is
+    |sum(v_t * A)| / v over the whole wetted surface. Cd and Cf are the per-axis vectors below,
+    collapsed to a scalar by blending along the direction of the resulting force.
 
-    The measured Cd*S product for surge is 0.0138 m2. On the ORIGINAL vendored shrink-wrap hull
-    that meant Cd = 0.186, absurdly low for a bluff body - the tell that the mesh area was wrong.
-    On the open-frame hull below (S = 0.0194 m2) the same product gives Cd ~ 0.62, which is a
-    physically sensible value for an open frame. The two errors had been cancelling in the speed
-    measurement but NOT in the pitching moment.
+    Both forms invert directly against Wu's identified damping, so the coefficients here are
+    DERIVED, not fitted to a top speed:
+        Cd_i = 2 * Xuu_i / (rho * A_proj_i)        Cf_i = Xu_i / (rho * S_eff_i)
+    integrated over BOTH external parts (the hull frame and the Wings mount proxy):
+        A_proj = 0.02185  0.19841  0.30817  m2
+        S_eff  = 0.9674   0.6372   0.4176   m2
+    One shared set would then be Cd = 1.664 / 0.218 / 0.240, Cf = 0.00417 / 0.00976 / 0.01240.
+    Sway, heave and all three viscous axes use exactly that. Only SURGE Cd is split between the
+    two parts, to place the centre of drag (see TRIM below), keeping the sum on Wu:
+        0.5 * rho * (1.761 * 0.01945 + 0.875 * 0.00240) = 18.18 = Xuu
+    Measured on-axis surge drag at 1.5 m/s is 46.95 N against Wu's 46.95 N, and the law is
+    quadratic: drag / (A_eff * v^2) came out 1.000 and 0.995 at 1.83 and 0.94 m/s.
+
+    ======================= TRIM UNDER SURGE (was an open issue) =======================
+    The vectored thrust line (z = +0.0725) sits 5 mm ABOVE the CG (z = +0.0775), so at steady
+    speed thrust and drag form a couple of (z_drag - 0.0725) * F. That couple does not depend on
+    where the CG is, only on the gap between the two lines of action, so no amount of ballast or
+    CG tuning touches it. Restoring stiffness is only B*BG = 114.8 * 0.020 = 2.30 Nm/rad, so at
+    full speed each millimetre of that gap is worth roughly 2 degrees of pitch.
+
+    The Wings proxy is the knob that places the combined centre of drag. The hull frame's own
+    centre sits at z = +0.079, just below the thrust line; the Wings sit at z = 0, well above it.
+    A surge Cd of 0.875 on the Wings averages the two onto the thrust line. That number is
+    calibrated against measured trim, which is what the proxy is for - it is not a shape
+    coefficient. It is at least ordered the right way physically: a thin slab edge-on should be
+    less bluff than the frame (0.875 < 1.761).
+
+    This block used to blame the projected-area centroid and propose rebalancing the frame and
+    mount areas. That was wrong, and the vehicle settled about 9 degrees nose-down. Four separate
+    defects were compounding, all now fixed:
+      1. bluerov2_frame_phy.obj lost 73% of its frontal area to inverted face winding - see
+         PHYSICS MESH below. This dominated everything else.
+      2. viscous_drag was set to 0.1 * quadratic_drag by analogy with the library defaults and
+         never derived. rho * Cf * S_eff * v with Cf = 0.062 and S_eff = 0.833 m2 is 77.5 N at
+         1.5 m/s where Wu's linear damping wants 6 N - so skin friction, not form drag, was
+         setting the top speed that the surge Cd was supposedly calibrated against. The two
+         errors cancelled in the speed measurement but not in the pitching moment.
+      3. SolidEntity.cpp computed form drag as |v|^3 * A * cos(a) instead of |v|^2 * A * cos(a).
+         Any Cd was then valid at exactly one speed, and the surge/heave drag ratio - which sets
+         the trim angle of attack - was distorted by the ratio of those speeds.
+      4. CorrectHydrodynamicForces scaled the drag TORQUE by a coefficient blended from the
+         torque's own direction rather than the force's. Under surge the force picks up Cd.x
+         while the pitching moment it induces picks up Cd.y, so each part's effective centre of
+         drag was rescaled by an arbitrary factor and the balance computed here was meaningless.
+    Items 3 and 4 were fixed in Library/src/entities/SolidEntity.cpp.
+
+    ================================ PHYSICS MESH ================================
+    bluerov2_frame_phy.obj must contain ONLY triangles and quads. rapidobj::Triangulate, which
+    GeometryFileUtil uses, inverts the winding of polygons with more than four vertices when the
+    file carries no vertex normals. The four 24-gon enclosure end caps therefore all came out
+    facing -X: sum(A*n) over the mesh was [-0.0283, 0, 0] instead of zero, the two forward-facing
+    caps (0.0142 m2 of the 0.0194 m2 frontal area) were excluded from the pressure integral, and
+    the drag centre swung wildly with the smallest change in angle of attack. The caps are now
+    pre-triangulated in the asset. For any new physics mesh, check that sum(A*n) == 0.
 
     =============================== THRUSTERS ===============================
     FDThrust (Library/include/actuators/ActuatorDynamics.h) computes, at bollard (u = 0):
@@ -73,42 +123,32 @@
       model produces ~2.5% more thrust than the datasheet figure.
     - Thruster-thruster and thruster-hull interaction losses are NOT modelled: each unit makes
       its full datasheet bollard thrust, so the four vectored units sum to ~141 N where the real
-      vehicle is quoted at 9 kgf = 88 N. Wu section 5.3 notes the same limitation. The surge drag
-      calibration above absorbs this, since it was tuned to the published top speed.
-
-    ============ OPEN ISSUE: RESIDUAL NOSE-DOWN PITCH UNDER SURGE ============
-    At full surge the vehicle settles about 9 degrees nose-down. THE CAUSE IS NOT YET KNOWN.
-
-    Ruled out so far:
-      - Hull drag/thrust misalignment. The frame and wing-mount physical proxies are balanced
-        so their combined projected-area centroid (+0.0724) sits on the vectored thrust line
-        (+0.0725) - a 0.1 mm lever. By that model the pitch should be near zero. It is not.
-      - Propeller reaction torque. Handedness is (cw, ccw, cw, ccw) so the four reaction
-        torques cancel under surge; setting torque_coeff to 0 changes nothing.
-      - Propeller drag. Thruster.cpp only ever calls propeller_->BuildGraphicalObject() and
-        hands the mesh to the renderer. The propeller solid is NEVER added to the Bullet world,
-        and Ocean::ApplyFluidForces only acts on collision objects in the world, so propellers
-        contribute no drag at all. (An earlier version of this comment claimed they did and
-        blamed a double count - that was wrong.)
-
-    Most likely next lead: the projected-area centroid is the wrong model for where drag acts.
-    SolidEntity.cpp:1270 scales each face by |Fx|*Cd.x + |Fy|*Cd.y + |Fz|*Cd.z, a scalar blend,
-    and Cd here is strongly anisotropic (0.617 / 0.075 / 0.098, an 8:1 spread). Faces at
-    different angles are therefore weighted very differently and the true centre of drag need
-    not sit at the area centroid.
-
-    Suggested discriminating test: delete the Wings external_part and re-measure. The area
-    model predicts the pitch should swing nose-UP (frame-only centroid is 8.9 mm below the
-    thrust line). If it does, the model is roughly right and the balance can be retuned; if the
-    pitch barely moves, start again from the per-face integration.
+      vehicle is quoted at 9 kgf = 88 N. Wu section 5.3 notes the same limitation. Drag is now
+      pinned to Wu rather than to the published top speed, so this over-thrust is no longer
+      absorbed anywhere and shows up directly: the model tops out at ~1.83 m/s against the
+      published ~1.5 m/s. Closing that means correcting the thrust model, not the drag.
+    - The physics hull is a closed shrink-wrap, so its plan area (0.308 m2) is 14x its frontal
+      area (0.0219 m2) where the real vehicle is an open frame. The per-axis coefficients above
+      correct this on-axis, but Stonefish blends them along the resultant force direction, so a
+      few degrees of angle of attack still inflate surge drag well above Wu. At the trimmed
+      1.4 deg the excess is about 29%.
+    - The CG/CB datum ("vehicle centre" at z = +0.0575, used by <cg> and by the Displacement
+      part) was taken from bluerov2_phy.obj, which is no longer in the repo. The physics mesh
+      actually in use spans z -0.052..0.184, centre z = +0.066, and its enclosed volume centroid
+      is z = +0.078. Re-datuming to either makes the trim markedly worse, so 0.0575 is kept, but
+      it is an anchor to a deleted asset rather than a measurement.
 
     ============================== MEASURED BEHAVIOUR ==============================
-    Steady state at full surge, fully submerged:
-        top speed        1.49 - 1.51 m/s     (published: ~1.5 m/s)
-        pitch            -1.5 to -3 deg
-        sway / yaw drift 0.000 / 0.0         (no cross-coupling)
-        free rise, all stop   0.103 m/s      (consistent with net +2.0 N)
-        thrust per unit  51.52 N bollard     (T200 datasheet: 51.5 N)
+    Full surge, free-running, fully submerged, still water:
+        top speed                      1.83 m/s    (published ~1.5; see thruster note above)
+        pitch                         -0.2 deg
+        pitch at 60% surge            +2.3 deg
+        pitch, full surge, depth held -1.1 deg
+        sway drift                     0.000 m/s
+        yaw drift                      under 1.5 deg over 50 s
+        free rise, all stop            0.171 m/s   (Wu: Zw*v + Zww*v^2 = 2.00 N = net buoyancy)
+        on-axis surge drag @ 1.5 m/s   46.95 N     (Wu: 46.95 N)
+        thrust per unit                51.52 N bollard (T200 datasheet: 51.5 N)
 -->
 <scenario>
 	<looks>
@@ -136,18 +176,19 @@
 				<mass value="11.5"/>
 				<inertia xyz="0.16 0.16 0.16"/>
 				<cg xyz="-0.010 0.0 0.0775" rpy="0.0 0.0 0.0"/>
-				<hydrodynamics quadratic_drag="0.617 0.075 0.098" viscous_drag="0.062 0.008 0.010"/>
+				<hydrodynamics quadratic_drag="1.761 0.218 0.240" viscous_drag="0.00417 0.00976 0.01240"/>
 				<compound_transform rpy="0.0 0.0 0.0" xyz="0.0 0.0 0.0"/>
 			</external_part>
 
 			<!-- Heavy outboard thruster mounts. The 85k-triangle visual mesh is far too heavy to
 			     run per-face hydrodynamics on, so a small generated proxy carries the physics.
 			     Its height and area matter: the mounts sit at the vertical thrusters' height
-			     (z = 0) and present little frontal area. Using the vendored ring mesh here instead
-			     put 0.0112 m2 up at z = -0.020, which dragged the COMBINED centre of pressure
-			     to +0.0405 and left a 32 mm lever below the thrust line - the vehicle then
-			     pitched nose-DOWN under surge. Frame and mounts are balanced so that their
-			     combined CoP (+0.0724) sits on the vectored thruster height (+0.0725). -->
+			     (z = 0), well above the vectored thrust line, so this part is what places the
+			     vehicle's combined centre of drag - see TRIM UNDER SURGE in the header. Its surge
+			     Cd (0.875) is calibrated against measured trim; the other five coefficients are
+			     shared with the hull. The <hydrodynamics> block is NOT optional: a part without
+			     one silently inherits an ellipsoid geometry fit, which for this thin slab gives
+			     Cd ~ 0.04/0.025/1.0 and leaves it no authority over the trim at all. -->
 			<external_part name="Wings" type="model" physics="submerged" buoyant="false">
 				<physical>
 					<mesh filename="bluerov2/bluerov2_wings_phy.obj" scale="1.0"/>
@@ -160,6 +201,7 @@
 				<material name="Neutral"/>
 				<look name="brov_wings"/>
 				<mass value="0.001"/>
+				<hydrodynamics quadratic_drag="0.875 0.218 0.240" viscous_drag="0.00417 0.00976 0.01240"/>
 				<compound_transform rpy="0.0 0.0 0.0" xyz="0.0 0.0 0.0"/>
 			</external_part>
 
