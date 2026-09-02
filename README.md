@@ -2,6 +2,86 @@
 # ***Stonefish***
 ### An advanced simulation tool developed for marine robotics.
 
+### BlueROV2 Heavy (this fork)
+
+A complete **BlueROV2 Heavy** - the Blue Robotics observation-class ROV in its 8-thruster
+configuration - with a forward-looking camera you can fly on. It is meant for practising manual
+piloting on camera visuals, the way a real pilot flies off a topside display.
+
+```console
+$ ./build/Tests/BlueROV2Test.exe
+```
+
+#### Piloting
+
+The keyboard flies the **vehicle**, not the scene camera. `Tab` hands the keys back to the scene
+camera and back again; the active mode is shown on the HUD along with speed, depth and attitude.
+
+| Key | Action |
+| --- | --- |
+| `W` / `S` | Surge - ahead / astern |
+| `A` / `D` | Yaw - port / starboard |
+| `,` / `.` | Sway - port / starboard |
+| `Q` / `E` | Heave - up / down |
+| `Up` / `Down` | Pitch trim |
+| `Left` / `Right` | Roll trim |
+| `Space` | All stop |
+| `V` | Cycle the onboard camera - bottom-right inset, full width, off |
+| `Tab` | Swap the keys between the vehicle and the scene camera |
+| `H` | Hide the HUD; piloting carries on |
+
+Mouse control of the scene camera (drag to rotate, wheel to zoom) works in both modes, and the six
+demand sliders on the HUD are a second way in.
+
+#### Control feel
+
+A held key **ramps** to its target over about half a second rather than stepping to it, and each
+axis is capped below full thruster authority:
+
+| Axis | Cap | Steady result |
+| --- | --- | --- |
+| Surge | 0.80 | 1.45 m/s |
+| Sway | 0.60 | 0.90 m/s |
+| Heave | 0.50 | 0.81 m/s |
+| Yaw | 0.12 | 47 deg/s |
+| Pitch / roll | 0.30 | trim only |
+
+The caps are there because full authority is not flyable: at a yaw demand of 1.0 the model turns at
+**380 deg/s**, more than a revolution per second. That is a property of the model rather than of the
+vehicle - rotational damping is derived from the geometry and cannot be matched to an identified
+`Nrr`, while every thruster makes its full datasheet bollard thrust with no interaction losses. The
+surge cap is picked so that full ahead gives the BlueROV2's published ~1.5 m/s instead of the
+model's unthrottled 1.83 m/s. All of these are named constants at the top of
+`Tests/BlueROV2Test/BlueROV2TestApp.cpp`, and the sliders still reach 1.0 if you want the rest.
+
+#### Onboard camera
+
+A forward-looking 1280x720 low-light camera sits in the bow at the height of the electronics
+enclosure, with the two Lumen lights aimed forward and tilted 15 degrees down. `V` cycles the view
+between a bottom-right inset, a full-width pilot view and off.
+
+Worth knowing if you add your own: a vision sensor looks along the **+Z** axis of its own frame with
+**-Y** as image up, an optical convention sitting inside an X-forward NED body frame. A
+forward-facing camera therefore needs `rpy="${pi/2} 0.0 ${pi/2}"`, not `rpy="0 0 0"` - which aims it
+straight down. `<light>` emits along its own +Z as well.
+
+#### Reusing the vehicle
+
+`Tests/Data/bluerov2_heavy.scn` holds the vehicle alone and takes arguments, so it can be dropped
+into any scene:
+
+```xml
+<include file="bluerov2_heavy.scn">
+    <arg name="robot_name" value="BLUEROV2"/>
+    <arg name="robot_position" value="0.0 0.0 3.0"/>
+</include>
+```
+
+`Tests/Data/bluerov2_test.scn` is the demo scene that includes it - a shallow-water site with a
+seabed, two reference blocks and a neutrally buoyant marker to fly around. The header of
+`bluerov2_heavy.scn` documents where every mass, drag and thruster coefficient came from, which
+figures were measured and which limitations remain.
+
 ### Windows Support (this fork)
 
 Upstream _Stonefish_ is Linux-only. This fork builds and runs natively on **Windows x64** using the
@@ -52,7 +132,7 @@ $ ./build/Tests/UnderwaterTest.exe
 | `FallingTest` | Rigid bodies, collisions, materials |
 | `FloatingTest` | Surface vessel, buoyancy, a thruster - the shortest example to read |
 | `UnderwaterTest` | Full ocean, an AUV, sonars and cameras - the heaviest |
-| `BlueROV2Test` | BlueROV2 Heavy ROV, 8 thrusters, keyboard-flown through a 6 DOF thrust allocation |
+| `BlueROV2Test` | BlueROV2 Heavy ROV, 8 thrusters, keyboard-flown on its onboard camera - see [above](#bluerov2-heavy-this-fork) |
 | `FlyingTest`, `SlidingTest`, `JointsTest`, `CableTest` | Aerodynamics, friction, joints, cables |
 | `FluidDynamicsTest`, `CameraTest`, `LearningTest` | Hydrodynamics, vision sensors, ML interfacing |
 
@@ -66,7 +146,7 @@ $ ./build/Tests/UnderwaterTest.exe
 | `H` / `K` / `P` / `C` | Toggle the HUD / keymap / performance monitor / console |
 | `Esc` | Quit |
 
-In `BlueROV2Test` the keyboard flies the **vehicle** instead of the camera: `W`/`S` surge, `A`/`D` yaw, `Q`/`E` heave, `,`/`.` sway, arrows pitch/roll trim, `Space` all-stop. Press `Tab` to hand the keys back to the camera and back again; the active mode is shown on the HUD along with speed, depth and attitude. Camera mouse control (drag to rotate, wheel to zoom) works in both modes.
+In `BlueROV2Test` the keyboard flies the **vehicle** instead of the camera - see [BlueROV2 Heavy](#bluerov2-heavy-this-fork) above for the full control list.
 
 
 **Write your own simulation.** Subclass `sf::SimulationManager`, implement `BuildScenario()`, and

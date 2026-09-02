@@ -28,6 +28,7 @@
 #include <graphics/IMGUI.h>
 #include <sensors/vision/ColorCamera.h>
 #include <core/Console.h>
+#include <utils/SystemUtil.hpp>
 
 #include <algorithm>
 #include <cstdio>
@@ -75,6 +76,30 @@ namespace
         {"ThrusterVertBackLeft",   sf::Scalar( 1), sf::Scalar(-1), sf::Scalar( 1)}
     };
 
+    //! Fraction of full thruster authority that a held key is allowed to command, per axis.
+    //!
+    //! Full authority is far too much to fly on. The measured steady rate at a yaw demand of
+    //! 1.0 is 380 deg/s - more than a revolution per second - because the model's rotational
+    //! damping is geometry-driven and cannot be matched to Wu's Nrr (see KNOWN LIMITATIONS in
+    //! bluerov2_heavy.scn), while every thruster makes its full datasheet bollard thrust with
+    //! no interaction losses. The caps below trade that unusable authority for rates a pilot
+    //! can actually fly. The sliders still reach 1.0, so full authority is one drag away.
+    const sf::Scalar GAIN_SURGE = sf::Scalar(0.80);
+    const sf::Scalar GAIN_SWAY  = sf::Scalar(0.60);
+    const sf::Scalar GAIN_HEAVE = sf::Scalar(0.50);
+    const sf::Scalar GAIN_YAW   = sf::Scalar(0.12);
+    const sf::Scalar GAIN_PITCH = sf::Scalar(0.30);
+    const sf::Scalar GAIN_ROLL  = sf::Scalar(0.30);
+
+    //! How fast a demand moves toward what the keys ask for, in demand units per second.
+    //! 2.0 is half a second from rest to an axis maximum. Stepping straight to the maximum,
+    //! which is what this used to do, is most of what made the controls feel twitchy.
+    const sf::Scalar RAMP_RATE = sf::Scalar(2.0);
+
+    //! Largest frame time the ramp will integrate, so a stall does not jump the demand
+    //! straight to its maximum.
+    const sf::Scalar RAMP_MAX_DT = sf::Scalar(0.1);
+
     const char* ROBOT_NAME = "BLUEROV2";
     const char* CAMERA_NAME = "camera";
 
@@ -91,11 +116,22 @@ namespace
     {
         return keys[code] ? sf::Scalar(1) : sf::Scalar(0);
     }
+
+    //! Moves value toward target at RAMP_RATE, without overshooting it.
+    inline void RampTowards(sf::Scalar& value, sf::Scalar target, sf::Scalar dt)
+    {
+        const sf::Scalar step = RAMP_RATE * dt;
+        if(target > value)
+            value = std::min(target, value + step);
+        else
+            value = std::max(target, value - step);
+    }
 }
 
 BlueROV2TestApp::BlueROV2TestApp(std::string dataDirPath, sf::RenderSettings s, sf::HelperSettings h, BlueROV2TestManager* sim)
     : GraphicalSimulationApp("BlueROV2Test", dataDirPath, s, h, sim),
       vehicleControl_(true),
+      lastRampTime_(0),
       cameraView_(CameraView::SMALL),
       camera_(nullptr),
       cameraResolved_(false),
@@ -148,24 +184,34 @@ void BlueROV2TestApp::KeyDown(SDL_Event* event)
 
 void BlueROV2TestApp::ReadKeyboard()
 {
+    //Wall clock rather than simulation time, so the ramp feels the same whatever the frame
+    //rate or the real-time factor
+    const uint64_t now = sf::GetTimeInMicroseconds();
+    sf::Scalar dt = lastRampTime_ == 0 ? sf::Scalar(0)
+                                       : sf::Scalar(now - lastRampTime_) / sf::Scalar(1000000);
+    lastRampTime_ = now;
+    dt = std::min(dt, RAMP_MAX_DT);
+
     if(!vehicleControl_)
         return;
 
     //Polling rather than key events, so that held and simultaneous keys work naturally
     const Uint8* keys = SDL_GetKeyboardState(nullptr);
 
-    if(keys[SDL_SCANCODE_SPACE]) //All stop
+    if(keys[SDL_SCANCODE_SPACE]) //All stop, immediately - no ramp
     {
         surge_ = sway_ = heave_ = roll_ = pitch_ = yaw_ = sf::Scalar(0);
         return;
     }
 
-    surge_ = Held(keys, SDL_SCANCODE_W)      - Held(keys, SDL_SCANCODE_S);
-    yaw_   = Held(keys, SDL_SCANCODE_D)      - Held(keys, SDL_SCANCODE_A);
-    heave_ = Held(keys, SDL_SCANCODE_E)      - Held(keys, SDL_SCANCODE_Q);
-    sway_  = Held(keys, SDL_SCANCODE_PERIOD) - Held(keys, SDL_SCANCODE_COMMA);
-    pitch_ = Held(keys, SDL_SCANCODE_UP)     - Held(keys, SDL_SCANCODE_DOWN);
-    roll_  = Held(keys, SDL_SCANCODE_RIGHT)  - Held(keys, SDL_SCANCODE_LEFT);
+    //The keys select a target and the demand ramps toward it. Releasing a key targets zero,
+    //so the vehicle eases off over the same half second rather than cutting dead.
+    RampTowards(surge_, (Held(keys, SDL_SCANCODE_W)      - Held(keys, SDL_SCANCODE_S))     * GAIN_SURGE, dt);
+    RampTowards(yaw_,   (Held(keys, SDL_SCANCODE_D)      - Held(keys, SDL_SCANCODE_A))     * GAIN_YAW,   dt);
+    RampTowards(heave_, (Held(keys, SDL_SCANCODE_E)      - Held(keys, SDL_SCANCODE_Q))     * GAIN_HEAVE, dt);
+    RampTowards(sway_,  (Held(keys, SDL_SCANCODE_PERIOD) - Held(keys, SDL_SCANCODE_COMMA)) * GAIN_SWAY,  dt);
+    RampTowards(pitch_, (Held(keys, SDL_SCANCODE_UP)     - Held(keys, SDL_SCANCODE_DOWN))  * GAIN_PITCH, dt);
+    RampTowards(roll_,  (Held(keys, SDL_SCANCODE_RIGHT)  - Held(keys, SDL_SCANCODE_LEFT))  * GAIN_ROLL,  dt);
 }
 
 void BlueROV2TestApp::AllocateThrust()

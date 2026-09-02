@@ -53,7 +53,7 @@ private:
     //! Size and placement of the forward camera inset.
     enum class CameraView { OFF, SMALL, LARGE };
 
-    //! Reads the held keys and turns them into the 6 DOF demand.
+    //! Reads the held keys and ramps the 6 DOF demand toward what they ask for.
     void ReadKeyboard();
     //! Distributes the 6 DOF demand onto the 8 thrusters.
     void AllocateThrust();
@@ -63,6 +63,8 @@ private:
     void DoTelemetry();
 
     bool vehicleControl_; //!< true = keys pilot the ROV, false = keys move the camera
+
+    uint64_t lastRampTime_; //!< for the demand ramp, in microseconds; 0 until the first frame
 
     CameraView cameraView_;
     sf::ColorCamera* camera_;   //!< nullptr until the scenario is built, and if lookup fails
