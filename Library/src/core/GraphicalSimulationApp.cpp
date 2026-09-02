@@ -214,6 +214,9 @@ void GraphicalSimulationApp::Init()
 
 void GraphicalSimulationApp::InitializeSDL()
 {
+#ifdef _WIN32
+    SDL_SetMainReady(); //Required because SDL_MAIN_HANDLED is defined, to stop SDL2 from renaming main()
+#endif
     SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_JOYSTICK);
     
     //Create OpenGL contexts

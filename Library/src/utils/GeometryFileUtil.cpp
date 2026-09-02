@@ -31,6 +31,15 @@
 #include "utils/SystemUtil.hpp"
 #include "rapidobj.hpp"
 
+#ifdef _WIN32
+// rapidobj.hpp includes <windows.h>, which defines macros that collide with identifiers used
+// below, in particular ERROR, which is expanded from the cError() console output macro.
+#undef ERROR
+#undef TRANSPARENT
+#undef near
+#undef far
+#endif
+
 namespace sf
 {
 

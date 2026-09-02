@@ -1,0 +1,515 @@
+<?xml version="1.0"?>
+<!--
+    BlueROV2 Heavy - Blue Robotics observation-class ROV, 8 thruster configuration.
+
+    Includable, parameterised robot definition. Use from a parent scenario file with:
+
+        <include file="bluerov2_heavy.scn">
+            <arg name="robot_name" value="BLUEROV2"/>
+            <arg name="robot_position" value="0.0 0.0 2.0"/>
+        </include>
+
+    The parent file must define the material "Neutral". Frame convention is NED:
+    X forward, Y starboard, Z down.
+
+    ================================ SOURCES ================================
+    Meshes from github.com/bvibhav/stonefish_bluerov2 (Apache-2.0), by a co-author of the
+    Stonefish ML paper cited in the README. Apache-2.0 is one-way compatible with GPL-3.0.
+
+    Physical parameters from the identified model of the BlueROV2 *Heavy*:
+      Wu, C.-J. (2018), "6-DoF Modelling and Control of a Remotely Operated Vehicle",
+      MSc thesis, Flinders University. Tables 5.1-5.3, p.48.
+
+        m  = 11.5 kg          W = 112.8 N,  B = 114.8 N  ->  net +2.0 N
+        r_g = [0, 0, 0.02] m  r_b = [0, 0, 0] m          ->  CG 20 mm below CB
+        Ix = Iy = Iz = 0.16 kg m2
+        Added mass   Xu' -5.5,  Yv' -12.7,  Zw' -14.57 kg
+        Linear damp  Xu  -4.03, Yv  -6.22,  Zw  -5.18  Ns/m
+        Quad damp    Xuu -18.18, Yvv -21.66, Zww -36.99 Ns2/m2
+
+    ============================ BUOYANCY MODELLING ============================
+    bluerov2_phy.obj encloses 19.54 L, but the real vehicle displaces only 11.70 L
+    (= B/(rho*g) = 114.8/9810). The simplified hull is a closed shrink-wrap around what is
+    really an open frame, so it "traps" water that in reality flows straight through.
+
+    Therefore the hull carries shape, drag and collision with buoyant="false", and the
+    displacement is set explicitly by the internal Displacement part, sized to 11.70 L and
+    centred on the origin so that the centre of buoyancy sits at r_b = [0,0,0]. The 20 mm
+    CG/CB separation that keeps the vehicle upright then comes from <cg> on the hull.
+
+    ============================== DRAG MODELLING ==============================
+    Stonefish does not take Fossen matrices. It integrates pressure and shear per mesh face
+    (SolidEntity::ComputeHydrodynamicForcesSubmerged), which for a body in pure translation
+    reduces to
+        form drag       F = 0.5 * rho * Cd * A_proj * v^2
+        skin friction   F =       rho * Cf * S_eff  * v
+    where A_proj is the projected area of the physics mesh along the flow and S_eff is
+    |sum(v_t * A)| / v over the whole wetted surface. Cd and Cf are the per-axis vectors below,
+    collapsed to a scalar by blending along the direction of the resulting force.
+
+    Both forms invert directly against Wu's identified damping, so the coefficients here are
+    DERIVED, not fitted to a top speed:
+        Cd_i = 2 * Xuu_i / (rho * A_proj_i)        Cf_i = Xu_i / (rho * S_eff_i)
+    integrated over BOTH external parts (the hull frame and the Wings mount proxy):
+        A_proj = 0.02185  0.19841  0.30817  m2
+        S_eff  = 0.9674   0.6372   0.4176   m2
+    One shared set would then be Cd = 1.664 / 0.218 / 0.240, Cf = 0.00417 / 0.00976 / 0.01240.
+    Sway, heave and all three viscous axes use exactly that. Only SURGE Cd is split between the
+    two parts, to place the centre of drag (see TRIM below), keeping the sum on Wu:
+        0.5 * rho * (1.761 * 0.01945 + 0.875 * 0.00240) = 18.18 = Xuu
+    Measured on-axis surge drag at 1.5 m/s is 46.95 N against Wu's 46.95 N, and the law is
+    quadratic: drag / (A_eff * v^2) came out 1.000 and 0.995 at 1.83 and 0.94 m/s.
+
+    ======================= TRIM UNDER SURGE (was an open issue) =======================
+    The vectored thrust line (z = +0.0725) sits 5 mm ABOVE the CG (z = +0.0775), so at steady
+    speed thrust and drag form a couple of (z_drag - 0.0725) * F. That couple does not depend on
+    where the CG is, only on the gap between the two lines of action, so no amount of ballast or
+    CG tuning touches it. Restoring stiffness is only B*BG = 114.8 * 0.020 = 2.30 Nm/rad, so at
+    full speed each millimetre of that gap is worth roughly 2 degrees of pitch.
+
+    The Wings proxy is the knob that places the combined centre of drag. The hull frame's own
+    centre sits at z = +0.079, just below the thrust line; the Wings sit at z = 0, well above it.
+    A surge Cd of 0.875 on the Wings averages the two onto the thrust line. That number is
+    calibrated against measured trim, which is what the proxy is for - it is not a shape
+    coefficient. It is at least ordered the right way physically: a thin slab edge-on should be
+    less bluff than the frame (0.875 < 1.761).
+
+    This block used to blame the projected-area centroid and propose rebalancing the frame and
+    mount areas. That was wrong, and the vehicle settled about 9 degrees nose-down. Four separate
+    defects were compounding, all now fixed:
+      1. bluerov2_frame_phy.obj lost 73% of its frontal area to inverted face winding - see
+         PHYSICS MESH below. This dominated everything else.
+      2. viscous_drag was set to 0.1 * quadratic_drag by analogy with the library defaults and
+         never derived. rho * Cf * S_eff * v with Cf = 0.062 and S_eff = 0.833 m2 is 77.5 N at
+         1.5 m/s where Wu's linear damping wants 6 N - so skin friction, not form drag, was
+         setting the top speed that the surge Cd was supposedly calibrated against. The two
+         errors cancelled in the speed measurement but not in the pitching moment.
+      3. SolidEntity.cpp computed form drag as |v|^3 * A * cos(a) instead of |v|^2 * A * cos(a).
+         Any Cd was then valid at exactly one speed, and the surge/heave drag ratio - which sets
+         the trim angle of attack - was distorted by the ratio of those speeds.
+      4. CorrectHydrodynamicForces scaled the drag TORQUE by a coefficient blended from the
+         torque's own direction rather than the force's. Under surge the force picks up Cd.x
+         while the pitching moment it induces picks up Cd.y, so each part's effective centre of
+         drag was rescaled by an arbitrary factor and the balance computed here was meaningless.
+    Items 3 and 4 were fixed in Library/src/entities/SolidEntity.cpp.
+
+    ================================ PHYSICS MESH ================================
+    bluerov2_frame_phy.obj must contain ONLY triangles and quads. rapidobj::Triangulate, which
+    GeometryFileUtil uses, inverts the winding of polygons with more than four vertices when the
+    file carries no vertex normals. The four 24-gon enclosure end caps therefore all came out
+    facing -X: sum(A*n) over the mesh was [-0.0283, 0, 0] instead of zero, the two forward-facing
+    caps (0.0142 m2 of the 0.0194 m2 frontal area) were excluded from the pressure integral, and
+    the drag centre swung wildly with the smallest change in angle of attack. The caps are now
+    pre-triangulated in the asset. For any new physics mesh, check that sum(A*n) == 0.
+
+    =============================== THRUSTERS ===============================
+    FDThrust (Library/include/actuators/ActuatorDynamics.h) computes, at bollard (u = 0):
+        thrust = rho * D^4 * kt * n^2,  n = setpoint / 2pi  [rev/s]
+    Solving for the T200 datasheet with D = 0.076, n = 3600/60 = 60 rev/s, rho = 1000:
+        kt_forward = 51.5 N / (1000 * 0.076^4 * 60^2) = 51.5 / 120.1 = 0.429
+        kt_reverse = 40.2 N / 120.1                                  = 0.335
+    Wu section 5.3 approximates each thruster at ~40 N max (K = diag[40...]); the reverse
+    figure above agrees almost exactly, and the forward one brackets it.
+
+    ============================ KNOWN LIMITATIONS ============================
+    - Added mass is computed by Stonefish from a geometry fit and has NO XML hook, so Wu's
+      values (-5.5, -12.7, -14.57 kg) cannot be set. It is whatever the hull fit gives.
+    - Linear and angular damping likewise have no direct hook; only quadratic form drag
+      (quadratic_drag) and skin friction (viscous_drag) are settable. Rotational drag is
+      purely geometry-driven, so Kpp/Mqq/Nrr cannot be matched.
+    - torque_coeff is ESTIMATED at 0.045 from the GIRONA500 kq/kt ratio; no T200 torque
+      data was found. It largely cancels across the symmetric thruster layout.
+    - kt is derived for fresh water, the datasheet condition. In seawater (1025 kg/m3) the
+      model produces ~2.5% more thrust than the datasheet figure.
+    - Thruster-thruster and thruster-hull interaction losses are NOT modelled: each unit makes
+      its full datasheet bollard thrust, so the four vectored units sum to ~141 N where the real
+      vehicle is quoted at 9 kgf = 88 N. Wu section 5.3 notes the same limitation. Drag is now
+      pinned to Wu rather than to the published top speed, so this over-thrust is no longer
+      absorbed anywhere and shows up directly: the model tops out at ~1.83 m/s against the
+      published ~1.5 m/s. Closing that means correcting the thrust model, not the drag.
+    - The physics hull is a closed shrink-wrap, so its plan area (0.308 m2) is 14x its frontal
+      area (0.0219 m2) where the real vehicle is an open frame. The per-axis coefficients above
+      correct this on-axis, but Stonefish blends them along the resultant force direction, so a
+      few degrees of angle of attack still inflate surge drag well above Wu. At the trimmed
+      1.4 deg the excess is about 29%.
+    - The CG/CB datum ("vehicle centre" at z = +0.0575, used by <cg> and by the Displacement
+      part) was taken from bluerov2_phy.obj, which is no longer in the repo. The physics mesh
+      actually in use spans z -0.052..0.184, centre z = +0.066, and its enclosed volume centroid
+      is z = +0.078. Re-datuming to either makes the trim markedly worse, so 0.0575 is kept, but
+      it is an anchor to a deleted asset rather than a measurement.
+
+    ============================= CAMERA AND LIGHTING =============================
+    A vision sensor looks along the +Z axis of its own frame, with -Y as image up
+    (Camera::UpdateTransform in Library/src/sensors/vision/Camera.cpp). That is a Z-forward
+    optical convention sitting inside an X-forward NED body frame, so rpy="0 0 0" does NOT
+    give a forward-looking camera - it gives one aimed straight DOWN and rolled 90 deg, which
+    is what this file had while claiming otherwise. The same applies to <light>, whose beam
+    axis is also its own +Z (Light::UpdateTransform).
+
+    To aim a sensor forward and tilted down by an angle a, keeping image-right on starboard:
+        rpy = (pi/2 - a, 0, pi/2)
+    Rz(pi/2)*Rx(pi/2 - a) then has columns X = starboard (image right), Y = down-ish
+    (so -Y is up), Z = forward, tilted down by a. The camera uses a = 0, the two Lumens
+    a = 15 deg so they light the water the camera is looking into.
+
+    The camera sits at x = 0.24, just clear of the bow: the visual hull reaches x = 0.222, and
+    x = 0.22 as originally written put the viewpoint inside the dome. Its height z = 0 is the
+    centreline of the upper electronics enclosure (the bow geometry splits into two tubes, at
+    z = -0.04..0.05 and z = 0.10..0.14), which is where the real camera looks out.
+
+    The picture is NOT displayed by this file. Colour cameras have no <display> element in
+    ScenarioParser - the only route is Camera::setDisplayOnScreen from C++, which BlueROV2Test
+    does, cycling the inset size on the V key.
+
+    ============================== MEASURED BEHAVIOUR ==============================
+    Full surge, free-running, fully submerged, still water:
+        top speed                      1.83 m/s    (published ~1.5; see thruster note above)
+        pitch                         -0.2 deg
+        pitch at 60% surge            +2.3 deg
+        pitch, full surge, depth held -1.1 deg
+        sway drift                     0.000 m/s
+        yaw drift                      under 1.5 deg over 50 s
+        free rise, all stop            0.171 m/s   (Wu: Zw*v + Zww*v^2 = 2.00 N = net buoyancy)
+        on-axis surge drag @ 1.5 m/s   46.95 N     (Wu: 46.95 N)
+        thrust per unit                51.52 N bollard (T200 datasheet: 51.5 N)
+-->
+<scenario>
+	<looks>
+		<look name="brov_hull" gray="1.0" roughness="0.4" metalness="0.1" texture="bluerov2/br2.png"/>
+		<look name="brov_wings" rgb="0.05 0.05 0.06" roughness="0.6" metalness="0.3"/>
+		<look name="brov_hidden" gray="0.5" roughness="0.9"/>
+		<look name="brov_propeller" gray="0.85" roughness="0.35"/>
+	</looks>
+
+	<robot name="$(arg robot_name)" fixed="false" self_collisions="false">
+		<base_link name="Vehicle" type="compound" physics="submerged">
+			<!-- Hull: shape, drag and collision. Carries the whole vehicle's mass properties.
+			     buoyant="false" because the mesh over-encloses (see BUOYANCY MODELLING above). -->
+			<external_part name="Hull" type="model" physics="submerged" buoyant="false">
+				<physical>
+					<mesh filename="bluerov2/bluerov2_frame_phy.obj" scale="1.0"/>
+					<origin rpy="0.0 0.0 0.0" xyz="0.0 0.0 0.0"/>
+				</physical>
+				<visual>
+					<mesh filename="bluerov2/bluerov2.obj" scale="1.0"/>
+					<origin rpy="0.0 0.0 0.0" xyz="0.0 0.0 0.0"/>
+				</visual>
+				<material name="Neutral"/>
+				<look name="brov_hull"/>
+				<mass value="11.5"/>
+				<inertia xyz="0.16 0.16 0.16"/>
+				<cg xyz="-0.010 0.0 0.0775" rpy="0.0 0.0 0.0"/>
+				<hydrodynamics quadratic_drag="1.761 0.218 0.240" viscous_drag="0.00417 0.00976 0.01240"/>
+				<compound_transform rpy="0.0 0.0 0.0" xyz="0.0 0.0 0.0"/>
+			</external_part>
+
+			<!-- Heavy outboard thruster mounts. The 85k-triangle visual mesh is far too heavy to
+			     run per-face hydrodynamics on, so a small generated proxy carries the physics.
+			     Its height and area matter: the mounts sit at the vertical thrusters' height
+			     (z = 0), well above the vectored thrust line, so this part is what places the
+			     vehicle's combined centre of drag - see TRIM UNDER SURGE in the header. Its surge
+			     Cd (0.875) is calibrated against measured trim; the other five coefficients are
+			     shared with the hull. The <hydrodynamics> block is NOT optional: a part without
+			     one silently inherits an ellipsoid geometry fit, which for this thin slab gives
+			     Cd ~ 0.04/0.025/1.0 and leaves it no authority over the trim at all. -->
+			<external_part name="Wings" type="model" physics="submerged" buoyant="false">
+				<physical>
+					<mesh filename="bluerov2/bluerov2_wings_phy.obj" scale="1.0"/>
+					<origin rpy="0.0 0.0 0.0" xyz="0.0 0.0 0.0"/>
+				</physical>
+				<visual>
+					<mesh filename="bluerov2/bluerov2_wings.obj" scale="1.0"/>
+					<origin rpy="0.0 0.0 0.0" xyz="0.0 0.0 0.0"/>
+				</visual>
+				<material name="Neutral"/>
+				<look name="brov_wings"/>
+				<mass value="0.001"/>
+				<hydrodynamics quadratic_drag="0.875 0.218 0.240" viscous_drag="0.00417 0.00976 0.01240"/>
+				<compound_transform rpy="0.0 0.0 0.0" xyz="0.0 0.0 0.0"/>
+			</external_part>
+
+			<!-- Displacement volume: 0.40 x 0.28 x 0.1045 = 11.704 L, centred on the MESH CENTROID
+			     (-0.010, 0, 0.0575), not on the mesh origin: bluerov2_phy.obj spans Z -0.072..0.187,
+			     so its origin sits about 58 mm above the vehicle centre. Wu's r_b/r_g are relative to
+			     the vehicle centre, so both the CB here and the <cg> above are offset to match. Getting
+			     this wrong puts the thrusters far below the CG and the vehicle pitches nose-up ~70 deg
+			     under surge. CG is 20 mm below CB, per Wu r_g - r_b. -->
+			<internal_part name="Displacement" type="box" physics="submerged" buoyant="true">
+				<dimensions xyz="0.400 0.280 0.1045"/>
+				<origin rpy="0.0 0.0 0.0" xyz="0.0 0.0 0.0"/>
+				<material name="Neutral"/>
+				<mass value="0.001"/>
+				<look name="brov_hidden"/>
+				<compound_transform rpy="0.0 0.0 0.0" xyz="-0.010 0.0 0.0575"/>
+			</internal_part>
+		</base_link>
+
+		<!-- ==== 8 x T200. Horizontal set vectored at +/-45 deg, vertical set outboard ====
+		     Handedness of the vectored set is (cw, ccw, cw, ccw), i.e. each SIDE shares a
+		     rotation direction. This is not cosmetic. Reaction torque acts along each thruster
+		     axis with sign -handedness*sign(thrust), so under surge the alternative arrangement
+		     (cw, ccw, ccw, cw) sums to (0, +2.83Q, 0) - a pure pitching moment that tipped the
+		     vehicle nose-up ~20 deg. The arrangement below sums to zero.
+		     cw.obj / ccw.obj match each thruster's handedness. -->
+
+		<actuator name="ThrusterFrontRight" type="thruster">
+			<link name="Vehicle"/>
+			<origin rpy="0.0 0.0 -0.7854" xyz="0.1355 0.1 0.0725"/>
+			<specs max_setpoint="${3600.0/60.0*2.0*pi}" normalized_setpoint="true"/>
+			<propeller diameter="0.076" right="true">
+				<mesh filename="bluerov2/cw.obj" scale="1.0"/>
+				<material name="Neutral"/>
+				<look name="brov_propeller"/>
+			</propeller>
+			<rotor_dynamics type="mechanical_pi">
+				<!-- J sets the rotor loop time constant tau = J/kp. Left to the mesh-derived value the
+				     T200 propeller gives J so small that the discrete loop is unstable at dt = 5 ms
+				     (it needs tau > dt/2). 0.05 gives tau = 50 ms, i.e. spin-up in ~0.15 s. -->
+				<rotor_inertia value="0.05"/>
+				<kp value="1.0"/>
+				<ki value="0.5"/>
+				<ilimit value="2.0"/>
+			</rotor_dynamics>
+			<thrust_model type="fluid_dynamics">
+				<thrust_coeff forward="0.429" reverse="0.335"/>
+				<torque_coeff value="0.045"/>
+			</thrust_model>
+		</actuator>
+
+		<actuator name="ThrusterFrontLeft" type="thruster">
+			<link name="Vehicle"/>
+			<origin rpy="0.0 0.0 0.7854" xyz="0.1355 -0.1 0.0725"/>
+			<specs max_setpoint="${3600.0/60.0*2.0*pi}" normalized_setpoint="true"/>
+			<propeller diameter="0.076" right="false">
+				<mesh filename="bluerov2/ccw.obj" scale="1.0"/>
+				<material name="Neutral"/>
+				<look name="brov_propeller"/>
+			</propeller>
+			<rotor_dynamics type="mechanical_pi">
+				<!-- J sets the rotor loop time constant tau = J/kp. Left to the mesh-derived value the
+				     T200 propeller gives J so small that the discrete loop is unstable at dt = 5 ms
+				     (it needs tau > dt/2). 0.05 gives tau = 50 ms, i.e. spin-up in ~0.15 s. -->
+				<rotor_inertia value="0.05"/>
+				<kp value="1.0"/>
+				<ki value="0.5"/>
+				<ilimit value="2.0"/>
+			</rotor_dynamics>
+			<thrust_model type="fluid_dynamics">
+				<thrust_coeff forward="0.429" reverse="0.335"/>
+				<torque_coeff value="0.045"/>
+			</thrust_model>
+		</actuator>
+
+		<actuator name="ThrusterBackRight" type="thruster">
+			<link name="Vehicle"/>
+			<origin rpy="0.0 0.0 -2.3562" xyz="-0.1475 0.1 0.0725"/>
+			<specs max_setpoint="${3600.0/60.0*2.0*pi}" normalized_setpoint="true"/>
+			<propeller diameter="0.076" right="true">
+				<mesh filename="bluerov2/cw.obj" scale="1.0"/>
+				<material name="Neutral"/>
+				<look name="brov_propeller"/>
+			</propeller>
+			<rotor_dynamics type="mechanical_pi">
+				<!-- J sets the rotor loop time constant tau = J/kp. Left to the mesh-derived value the
+				     T200 propeller gives J so small that the discrete loop is unstable at dt = 5 ms
+				     (it needs tau > dt/2). 0.05 gives tau = 50 ms, i.e. spin-up in ~0.15 s. -->
+				<rotor_inertia value="0.05"/>
+				<kp value="1.0"/>
+				<ki value="0.5"/>
+				<ilimit value="2.0"/>
+			</rotor_dynamics>
+			<thrust_model type="fluid_dynamics">
+				<thrust_coeff forward="0.429" reverse="0.335"/>
+				<torque_coeff value="0.045"/>
+			</thrust_model>
+		</actuator>
+
+		<actuator name="ThrusterBackLeft" type="thruster">
+			<link name="Vehicle"/>
+			<origin rpy="0.0 0.0 2.3562" xyz="-0.1475 -0.1 0.0725"/>
+			<specs max_setpoint="${3600.0/60.0*2.0*pi}" normalized_setpoint="true"/>
+			<propeller diameter="0.076" right="false">
+				<mesh filename="bluerov2/ccw.obj" scale="1.0"/>
+				<material name="Neutral"/>
+				<look name="brov_propeller"/>
+			</propeller>
+			<rotor_dynamics type="mechanical_pi">
+				<!-- J sets the rotor loop time constant tau = J/kp. Left to the mesh-derived value the
+				     T200 propeller gives J so small that the discrete loop is unstable at dt = 5 ms
+				     (it needs tau > dt/2). 0.05 gives tau = 50 ms, i.e. spin-up in ~0.15 s. -->
+				<rotor_inertia value="0.05"/>
+				<kp value="1.0"/>
+				<ki value="0.5"/>
+				<ilimit value="2.0"/>
+			</rotor_dynamics>
+			<thrust_model type="fluid_dynamics">
+				<thrust_coeff forward="0.429" reverse="0.335"/>
+				<torque_coeff value="0.045"/>
+			</thrust_model>
+		</actuator>
+
+		<actuator name="ThrusterVertFrontRight" type="thruster">
+			<link name="Vehicle"/>
+			<origin rpy="0.0 -1.5708 0.0" xyz="0.12 0.218 0.0"/>
+			<specs max_setpoint="${3600.0/60.0*2.0*pi}" normalized_setpoint="true"/>
+			<propeller diameter="0.076" right="true">
+				<mesh filename="bluerov2/cw.obj" scale="1.0"/>
+				<material name="Neutral"/>
+				<look name="brov_propeller"/>
+			</propeller>
+			<rotor_dynamics type="mechanical_pi">
+				<!-- J sets the rotor loop time constant tau = J/kp. Left to the mesh-derived value the
+				     T200 propeller gives J so small that the discrete loop is unstable at dt = 5 ms
+				     (it needs tau > dt/2). 0.05 gives tau = 50 ms, i.e. spin-up in ~0.15 s. -->
+				<rotor_inertia value="0.05"/>
+				<kp value="1.0"/>
+				<ki value="0.5"/>
+				<ilimit value="2.0"/>
+			</rotor_dynamics>
+			<thrust_model type="fluid_dynamics">
+				<thrust_coeff forward="0.429" reverse="0.335"/>
+				<torque_coeff value="0.045"/>
+			</thrust_model>
+		</actuator>
+
+		<actuator name="ThrusterVertFrontLeft" type="thruster">
+			<link name="Vehicle"/>
+			<origin rpy="0.0 -1.5708 0.0" xyz="0.12 -0.218 0.0"/>
+			<specs max_setpoint="${3600.0/60.0*2.0*pi}" normalized_setpoint="true"/>
+			<propeller diameter="0.076" right="false">
+				<mesh filename="bluerov2/ccw.obj" scale="1.0"/>
+				<material name="Neutral"/>
+				<look name="brov_propeller"/>
+			</propeller>
+			<rotor_dynamics type="mechanical_pi">
+				<!-- J sets the rotor loop time constant tau = J/kp. Left to the mesh-derived value the
+				     T200 propeller gives J so small that the discrete loop is unstable at dt = 5 ms
+				     (it needs tau > dt/2). 0.05 gives tau = 50 ms, i.e. spin-up in ~0.15 s. -->
+				<rotor_inertia value="0.05"/>
+				<kp value="1.0"/>
+				<ki value="0.5"/>
+				<ilimit value="2.0"/>
+			</rotor_dynamics>
+			<thrust_model type="fluid_dynamics">
+				<thrust_coeff forward="0.429" reverse="0.335"/>
+				<torque_coeff value="0.045"/>
+			</thrust_model>
+		</actuator>
+
+		<actuator name="ThrusterVertBackRight" type="thruster">
+			<link name="Vehicle"/>
+			<origin rpy="0.0 -1.5708 0.0" xyz="-0.12 0.218 0.0"/>
+			<specs max_setpoint="${3600.0/60.0*2.0*pi}" normalized_setpoint="true"/>
+			<propeller diameter="0.076" right="false">
+				<mesh filename="bluerov2/ccw.obj" scale="1.0"/>
+				<material name="Neutral"/>
+				<look name="brov_propeller"/>
+			</propeller>
+			<rotor_dynamics type="mechanical_pi">
+				<!-- J sets the rotor loop time constant tau = J/kp. Left to the mesh-derived value the
+				     T200 propeller gives J so small that the discrete loop is unstable at dt = 5 ms
+				     (it needs tau > dt/2). 0.05 gives tau = 50 ms, i.e. spin-up in ~0.15 s. -->
+				<rotor_inertia value="0.05"/>
+				<kp value="1.0"/>
+				<ki value="0.5"/>
+				<ilimit value="2.0"/>
+			</rotor_dynamics>
+			<thrust_model type="fluid_dynamics">
+				<thrust_coeff forward="0.429" reverse="0.335"/>
+				<torque_coeff value="0.045"/>
+			</thrust_model>
+		</actuator>
+
+		<actuator name="ThrusterVertBackLeft" type="thruster">
+			<link name="Vehicle"/>
+			<origin rpy="0.0 -1.5708 0.0" xyz="-0.12 -0.218 0.0"/>
+			<specs max_setpoint="${3600.0/60.0*2.0*pi}" normalized_setpoint="true"/>
+			<propeller diameter="0.076" right="true">
+				<mesh filename="bluerov2/cw.obj" scale="1.0"/>
+				<material name="Neutral"/>
+				<look name="brov_propeller"/>
+			</propeller>
+			<rotor_dynamics type="mechanical_pi">
+				<!-- J sets the rotor loop time constant tau = J/kp. Left to the mesh-derived value the
+				     T200 propeller gives J so small that the discrete loop is unstable at dt = 5 ms
+				     (it needs tau > dt/2). 0.05 gives tau = 50 ms, i.e. spin-up in ~0.15 s. -->
+				<rotor_inertia value="0.05"/>
+				<kp value="1.0"/>
+				<ki value="0.5"/>
+				<ilimit value="2.0"/>
+			</rotor_dynamics>
+			<thrust_model type="fluid_dynamics">
+				<thrust_coeff forward="0.429" reverse="0.335"/>
+				<torque_coeff value="0.045"/>
+			</thrust_model>
+		</actuator>
+
+		<!-- ==== Sensors: a representative BlueROV2 research fit ==== -->
+		<sensor name="odometry" type="odometry" rate="100.0">
+			<history samples="1000"/>
+			<link name="Vehicle"/>
+			<origin rpy="0.0 0.0 0.0" xyz="0.0 0.0 0.0"/>
+			<noise position="0.02" velocity="0.01" angle="0.05" angular_velocity="0.05"/>
+		</sensor>
+
+		<sensor name="pressure" type="pressure" rate="10.0">
+			<history samples="1"/>
+			<link name="Vehicle"/>
+			<origin rpy="0.0 0.0 0.0" xyz="0.0 0.0 0.10"/>
+			<range pressure="1000000.0"/>
+			<noise pressure="10.0"/>
+		</sensor>
+
+		<sensor name="imu" type="imu" rate="50.0">
+			<history samples="1"/>
+			<link name="Vehicle"/>
+			<origin rpy="0.0 0.0 0.0" xyz="0.0 0.0 0.0"/>
+			<range angular_velocity="10.0 10.0 5.0" linear_acceleration="10.0"/>
+			<noise angle="0.01 0.01 0.05" angular_velocity="0.05" yaw_drift="0.001" linear_acceleration="0.1"/>
+		</sensor>
+
+		<sensor name="dvl" type="dvl" rate="10.0">
+			<history samples="1"/>
+			<link name="Vehicle"/>
+			<origin rpy="3.1416 0.0 -0.785" xyz="0.0 0.0 0.115"/>
+			<specs beam_angle="30.0"/>
+			<range velocity="5.0 5.0 5.0" altitude_min="0.3" altitude_max="50.0"/>
+			<water_layer minimum_layer_size="2.0" boundary_near="5.0" boundary_far="20.0"/>
+			<noise velocity="0.0015" altitude="0.001"/>
+		</sensor>
+
+		<sensor name="gps" type="gps" rate="1.0">
+			<history samples="1"/>
+			<link name="Vehicle"/>
+			<origin rpy="0.0 0.0 0.0" xyz="0.0 0.0 -0.12"/>
+			<noise ned_position="0.5"/>
+		</sensor>
+
+		<!-- Forward looking low-light camera, as on a standard BlueROV2. The rpy aims the
+		     sensor's +Z view axis along body +X - see CAMERA AND LIGHTING in the header. -->
+		<sensor name="camera" type="camera" rate="30.0">
+			<link name="Vehicle"/>
+			<origin rpy="${pi/2} 0.0 ${pi/2}" xyz="0.24 0.0 0.0"/>
+			<specs resolution_x="1280" resolution_y="720" horizontal_fov="80.0"/>
+		</sensor>
+
+		<!-- Lumen-style illumination, forward and slightly outboard, tilted 15 deg down.
+		     A light emits along its own +Z, so this needs the same rpy treatment as the
+		     camera; at rpy="0 0 0" both beams pointed straight at the seabed. -->
+		<light name="LightPort">
+			<link name="Vehicle"/>
+			<specs illuminance="15000.0" radius="0.02" cone_angle="90.0"/>
+			<color temperature="5000.0"/>
+			<origin rpy="${pi/2 - 0.2618} 0.0 ${pi/2}" xyz="0.20 -0.13 -0.04"/>
+		</light>
+
+		<light name="LightStarboard">
+			<link name="Vehicle"/>
+			<specs illuminance="15000.0" radius="0.02" cone_angle="90.0"/>
+			<color temperature="5000.0"/>
+			<origin rpy="${pi/2 - 0.2618} 0.0 ${pi/2}" xyz="0.20 0.13 -0.04"/>
+		</light>
+
+		<world_transform rpy="0.0 0.0 0.0" xyz="$(arg robot_position)"/>
+	</robot>
+</scenario>
