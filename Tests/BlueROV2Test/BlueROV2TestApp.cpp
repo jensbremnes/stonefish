@@ -24,6 +24,7 @@
 
 #include <actuators/Thruster.h>
 #include <core/Robot.h>
+#include <core/SimulationManager.h>
 #include <entities/SolidEntity.h>
 #include <graphics/IMGUI.h>
 #include <sensors/vision/ColorCamera.h>
@@ -128,8 +129,9 @@ namespace
     }
 }
 
-BlueROV2TestApp::BlueROV2TestApp(std::string dataDirPath, sf::RenderSettings s, sf::HelperSettings h, BlueROV2TestManager* sim)
-    : GraphicalSimulationApp("BlueROV2Test", dataDirPath, s, h, sim),
+BlueROV2TestApp::BlueROV2TestApp(std::string title, std::string dataDirPath, sf::RenderSettings s, sf::HelperSettings h,
+                                 sf::SimulationManager* sim)
+    : GraphicalSimulationApp(title, dataDirPath, s, h, sim),
       vehicleControl_(true),
       lastRampTime_(0),
       cameraView_(CameraView::SMALL),
@@ -301,7 +303,12 @@ void BlueROV2TestApp::ProcessInputs()
         ApplyCameraView();
 
     ReadKeyboard();
+    AugmentDemands();
     AllocateThrust();
+}
+
+void BlueROV2TestApp::AugmentDemands()
+{
 }
 
 void BlueROV2TestApp::DoTelemetry()

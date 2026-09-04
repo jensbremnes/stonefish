@@ -49,7 +49,7 @@ int main(int argc, const char * argv[])
     h.showForces = false;
 
     BlueROV2TestManager* simulationManager = new BlueROV2TestManager(200.0);
-    BlueROV2TestApp app(std::string(DATA_DIR_PATH), s, h, simulationManager);
+    BlueROV2TestApp app("BlueROV2Test", std::string(DATA_DIR_PATH), s, h, simulationManager);
     app.Run();
 
     return 0;

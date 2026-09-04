@@ -36,6 +36,11 @@ target_link_libraries(CableTest Stonefish_test)
 add_executable(BlueROV2Test BlueROV2Test/main.cpp BlueROV2Test/BlueROV2TestApp.cpp BlueROV2Test/BlueROV2TestManager.cpp)
 target_link_libraries(BlueROV2Test Stonefish_test)
 
+# Reuses BlueROV2TestApp for the piloting, thrust allocation and forward camera inset.
+add_executable(UnderIceTest UnderIceTest/main.cpp UnderIceTest/UnderIceTestApp.cpp UnderIceTest/UnderIceTestManager.cpp
+                            BlueROV2Test/BlueROV2TestApp.cpp)
+target_link_libraries(UnderIceTest Stonefish_test)
+
 if(WIN32)
     # Copy the runtime DLLs next to the executables, so they can be started without the MSYS2
     # ucrt64 bin directory on PATH, and the directory can be moved to a machine without MSYS2.
@@ -50,6 +55,6 @@ if(WIN32)
     add_dependencies(BundleRuntimeDLLs
         ConsoleTest CameraTest FallingTest FloatingTest FlyingTest JointsTest
         SlidingTest UnderwaterTest FluidDynamicsTest LearningTest CableTest
-        BlueROV2Test
+        BlueROV2Test UnderIceTest
     )
 endif()

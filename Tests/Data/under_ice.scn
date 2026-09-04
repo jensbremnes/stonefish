@@ -1,0 +1,279 @@
+<?xml version="1.0"?>
+<!--
+    Arctic under-ice site for the BlueROV2 Heavy, used by UnderIceTest.
+
+    A 200 x 200 m box of drifting first-year pack ice north of Svalbard, in about 48 m of
+    water, cut by one open lead. The vehicle itself is defined in bluerov2_heavy.scn and
+    included unchanged at the bottom of this file; the under-ice sensor payload is added
+    from C++ in UnderIceTestManager (see WHY THE PAYLOAD IS NOT HERE, below).
+
+    Frame convention is NED: X forward/north, Y starboard/east, Z DOWN. The water surface is
+    z = 0, so ice draft is POSITIVE z and the ice canopy is an ordinary submerged static body.
+
+    ================================ THE SITE ================================
+        x in [-100, +100]        200 m
+        y in [-100,  -6]         southern floe      IceFloeSouth  + IceEdgeSouth
+        y in [  -6,  +6]         open lead, 12 m    (no ice: sky, daylight, and the only
+                                                     place the vehicle can surface)
+        y in [  +6, +100]        northern floe      IceFloeNorth  + IceEdgeNorth
+        z = 45 .. 50             seabed             Seabed
+
+        vehicle spawn            (-70, -12, 3)      under level ice of 1.7 m draft, 6 m south
+                                                    of the lead edge, 45 m of water below
+
+    Five pressure ridges cross the site at various angles. Running straight ahead from the
+    spawn on the initial heading, along y = -12, the transect is:
+
+        x = -70 .. -25      level ice, 1.5-1.8 m draft
+        x = -20 ..   0      a ridge, keel 5-7 m           (50-70 m out)
+        x =  10 ..  25      level ice again
+        x =  40 ..  55      the big one, keel 10-12.7 m   (110-125 m out)
+
+    so the forward sonar has something to find twice over, and the second time it matters.
+    The deepest keel in the southern floe is 13.8 m, at (x = -12, y = -59); the northern floe
+    reaches 14.2 m at (x = 81, y = 16). Away from the ridges the draft runs 1.5 m over level
+    ice, 0.3 m over refrozen nilas and about 3 m over rafted patches.
+
+    The vehicle starts UNDER the canopy rather than under the lead. It is +2.0 N buoyant and
+    has no depth hold, so from a standing start in open water it simply surfaces. The lead is
+    6 m to port - hold ',' to slide out into it and watch the upward sounder lose its return.
+    UnderIceTest flies a 2 m standoff below the canopy off that sounder, which is what keeps
+    the vehicle off the ice and the ice readouts alive; press Z to release it and the vehicle
+    goes back to drifting up against the canopy, as it should.
+
+    ============================ THE ICE, AND HOW IT IS BUILT ============================
+    Both floes are `<static type="terrain">` - a Bullet btHeightfieldTerrainShape - ROTATED
+    180 DEGREES ABOUT X so they hang as a ceiling instead of lying as a floor.
+
+    A height field is the physically right representation here: ice draft genuinely is a
+    single-valued function of position. The price is that overhangs and rafted undercuts
+    cannot be expressed at all. No sensor in this scene resolves a re-entrant surface, so
+    that is a fair trade; if you ever need one, add a small `<static type="model">` block on
+    top of the terrain rather than trying to make the height field do it.
+
+    Terrain also earns its place on cost. Terrain::getAABB returns an inverted box, so a
+    200 m canopy is excluded from getWorldAABB and does not blow out the sun shadow
+    cascades - a `type="model"` mesh of the same size would. And Bullet has a dedicated grid
+    raycast accelerator for height fields (btCollisionWorld.cpp:416), which matters because
+    the upward-looking multibeam fires 128 rays 5 times a second.
+
+    THE 180 DEGREE FLIP IS NOT OPTIONAL. OpenGLContent::BuildTerrain seeds vertex normals at
+    (0,0,-1) and winds its faces to match, i.e. facing the sky. The pipeline runs with
+    glCullFace(GL_BACK), so an unflipped ice sheet would be culled away when viewed from
+    below - invisible to the pilot camera AND to every rendered sonar, while still colliding
+    perfectly. Rx(pi) has determinant +1, so the flip carries winding and normals with it and
+    nothing else has to change.
+
+    Heightmap encoding, worked through in Tests/Data/tools/make_sea_ice.py. Terrain.cpp
+    INVERTS the image, and AddToSimulation composes its recentring offset on the RIGHT of the
+    body transform, so it lands in the rotated frame:
+
+        world_z = origin.z + maxHeight - heightfield,  heightfield = (1 - px/65535) * height
+                = origin.z + (px/65535) * height       [given maxHeight == height]
+
+    so BLACK = shallowest, WHITE = deepest keel, the opposite of the seabed convention. Each
+    floe is encoded against its own draft extrema, which guarantees the pure-black pixel that
+    makes maxHeight == height and spends all 16 bits on the range that floe covers. THE TWO
+    FLOES THEREFORE DO NOT SHARE `height`. Regenerating the assets reprints both blocks; paste
+    them, do not hand-edit them.
+
+    16-bit is not optional either: 8 bit over a 12 m range quantises to 5 cm and terraces
+    visibly in the upward-looking sonar.
+
+    Grid is 0.75 m, which is the main performance knob in the whole scene. OpenGLPipeline
+    draws every object in every pass with no frustum culling, and there are five views to
+    render - the main one, the pilot camera, the forward sonar, and the sun's shadow cascades.
+    At 0.75 m the two floes are 133k triangles between them; `--resolution 0.5` triples that
+    for visibly finer keels, `--resolution 1.0` halves it again. Keels are 15-40 m wide, so
+    even 1 m resolves their shape; everything finer than the grid is carried by the normal
+    map rather than by geometry. Regenerating at a different resolution reprints the
+    `<dimensions>` lines below - the `height` values change slightly with the grid, because
+    each floe is encoded against the extrema its own samples happen to hit.
+
+    ================================ THE LEAD ================================
+    An open lead is the one thing a single height field cannot express, so there are two
+    terrains with a gap. It is what gives the scene daylight from above, a place to surface,
+    and a hard boundary for the upward sonar to report as "no return".
+
+    A height field ends at a knife edge with zero thickness, which looks wrong from below at
+    close range. IceEdgeSouth/North are thin boxes tucked under the last 0.4 m of each floe
+    to cap it, and they double as a vertical target for the forward sonar. They can be a
+    single fixed depth only because make_sea_ice.py tapers the last 4 m of each floe back to
+    the level-ice draft - which is also the physically ordinary case, since a lead opens
+    along a crack and cracks run through level ice, not through ridges.
+
+    The caps stop at z = 0 with no freeboard. Nothing in this scene may sit above z = 0: the
+    underwater material shader computes depth = P.z - waterLevel and multiplies albedo by
+    exp(-c * depth) (Library/shaders/materialU.frag:63-89), so a fragment above the surface
+    gets a POSITIVE exponent and blows out to white. The ice sail and the 0.31 m of freeboard
+    are real, and are deliberately not modelled.
+
+    `<waves height="0.0"/>` follows from the same shader. With waves on, waterLevel is an FFT
+    displacement that oscillates about 0, and ice sitting near z = 0 flickers between the two
+    shading regimes. A flat surface is also what is physically right under a consolidated
+    canopy, and it makes Ocean::GetDepth a pure point.z so physics and visuals agree.
+
+    ========================= MATERIALS ARE ALSO SONAR REFLECTIVITY =========================
+    OpenGLFLS/SSS/MSIS shade an echo as clamp(dot(N, toEye), 0, 1) * restitution
+    (Library/shaders/sonarInput.frag). The material's RESTITUTION IS ITS ACOUSTIC
+    REFLECTIVITY, so it is derived here rather than picked for feel:
+
+        R = (Z_ice - Z_water) / (Z_ice + Z_water)
+        Z_ice   = 917  * 3840 = 3.52e6 Pa s/m       (sea ice, c ~ 3840 m/s)
+        Z_water = 1027 * 1450 = 1.49e6 Pa s/m
+        R = 0.405   ->  restitution 0.40
+
+    Seabed silt at 2000 * 1800 = 3.6e6 gives 0.41; it is set to 0.45 so the bottom reads a
+    little brighter than the ice on the sonar. The catch is that restitution is doing double
+    duty - 0.40 is on the lively side for a mechanical contact, so the vehicle bounces off a
+    keel slightly more than a real one would. Acoustics won, because the collision is a rare
+    event and the sonar picture is on screen the whole time.
+
+    Ice-on-hull friction is low on purpose: wet ice runs about 0.02-0.1. The vehicle is
+    +2.0 N buoyant, so left alone it rises, pins itself against the canopy and slides along
+    it. That is correct behaviour, not a bug.
+
+    ========================= WHY THE PAYLOAD IS NOT HERE =========================
+    `<sensor>` is only legal inside `<robot>`, and ScenarioParser::IncludeFiles only expands
+    `<include>` elements that are DIRECT CHILDREN of `<scenario>` - it never recurses into a
+    robot. So there is no way to add sensors to an included vehicle from the parent file. The
+    alternatives were to duplicate all 515 lines of bluerov2_heavy.scn, or to push an FLS onto
+    the shared vehicle and make the open-water demo pay for rendering it. Instead
+    UnderIceTestManager::AddIcePayload() attaches them in C++ after parsing: the upward
+    altimeter, the upward ice-draft multibeam, the forward FLS and an up-pointing light. There
+    is no second camera - UnderIceTest tilts the bow camera instead, because a third rendered
+    view is one too many for the render pipeline's view queue.
+
+    ============================== KNOWN LIMITATIONS ==============================
+    - No light is transmitted through the ice. Stonefish has no translucency, so under the
+      canopy the only light is what the sun puts into the water column and what the vehicle's
+      own lights provide. Sun elevation is the lever: it is set low here both because that is
+      right for the latitude and season and because it keeps the under-ice volume dark.
+    - No under-ice caustics, no refraction through the ice, no bubbles trapped against it.
+    - BuildTerrain normalises UVs per axis (uv = (j/(nx-1), i/(ny-1)) * uvScale), so the
+      texture is stretched by the terrain's aspect ratio. These floes are 200 x 94 m, so the
+      ice texture is 2.1 times coarser along x than along y. Unavoidable without changing the
+      library; barely visible on an organic texture.
+    - The floes are fixed. Real pack ice drifts, deforms and closes leads. `<animated>` with a
+      trajectory could drift them, but the whole canopy would have to move as one rigid piece.
+      The 0.04 m/s current here stands in for the relative motion.
+    - GPS is on the vehicle and is meaningless under a canopy. It is left in place because it
+      belongs to the shared vehicle definition, and because watching it drop out under the
+      ice and come back in the lead is itself instructive.
+-->
+<scenario>
+	<solver>
+		<multithreading max_physics_threads="8"/>
+	</solver>
+
+	<environment>
+		<!-- North of Svalbard, on the drift. Late winter. -->
+		<ned latitude="82.5" longitude="15.0"/>
+
+		<ocean>
+			<!-- Seawater at S = 34.5 sitting at its freezing point. Jerlov 0.05 is very clear
+			     water, which is what winter under-ice conditions actually give: no bloom, no
+			     river input, no wave-stirred sediment. -->
+			<water density="1027.0" jerlov="0.05" temperature="-1.8"/>
+			<waves height="0.0"/>
+			<particles enabled="true"/>
+			<current type="uniform">
+				<velocity xyz="0.04 0.02 0.0"/>
+			</current>
+		</ocean>
+
+		<atmosphere>
+			<!-- Low sun: right for 82.5 N in late winter, and it keeps the water under the
+			     canopy dark, which is the only way to fake the fact that no light gets
+			     through the ice. Drop the elevation further if the scene still reads bright. -->
+			<sun azimuth="180.0" elevation="6.0"/>
+			<conditions temperature="-22.0" pressure="101300.0" humidity="0.75"/>
+		</atmosphere>
+	</environment>
+
+	<materials>
+		<!-- "Neutral" is required by bluerov2_heavy.scn. Physical materials can only be
+		     defined in the main file, never in an included one. -->
+		<material name="Neutral" density="1000.0" restitution="0.5"/>
+		<material name="SeaIce" density="917.0" restitution="0.40"/>
+		<material name="Seabed" density="2000.0" restitution="0.45"/>
+		<friction_table>
+			<friction material1="Neutral" material2="Neutral" static="0.5" dynamic="0.2"/>
+			<friction material1="Neutral" material2="SeaIce" static="0.05" dynamic="0.02"/>
+			<friction material1="Neutral" material2="Seabed" static="0.4" dynamic="0.2"/>
+			<friction material1="SeaIce" material2="SeaIce" static="0.05" dynamic="0.02"/>
+			<friction material1="SeaIce" material2="Seabed" static="0.3" dynamic="0.15"/>
+			<friction material1="Seabed" material2="Seabed" static="0.9" dynamic="0.7"/>
+		</friction_table>
+	</materials>
+
+	<looks>
+		<!-- gray="1.0" so the albedo texture carries the colour undiluted, the same way
+		     brov_hull does. The normal map is what supplies all relief finer than the 0.75 m
+		     height field, and it also perturbs the normal the sonar shader uses, so the ice
+		     speckles in the FLS image instead of returning a flat sheet. -->
+		<look name="ice_underside" gray="1.0" roughness="0.35" metalness="0.0" reflectivity="0.03"
+		      texture="ice/ice_albedo.png" normal_map="ice/ice_normal.png"/>
+		<look name="ice_edge" gray="0.92" roughness="0.45" reflectivity="0.03"/>
+		<look name="seabed" rgb="0.32 0.30 0.27" roughness="0.95"/>
+	</looks>
+
+	<!-- ==================== The ice canopy ====================
+	     `height` and the world z come from make_sea_ice.py and differ per floe; see the
+	     header. rpy="pi 0 0" is what turns a floor into a ceiling. -->
+	<static name="IceFloeSouth" type="terrain">
+		<height_map filename="ice/ice_draft_south_16b.png"/>
+		<dimensions scalex="0.749064" scaley="0.752" height="13.4725"/>
+		<material name="SeaIce"/>
+		<look name="ice_underside" uv_scale="46.0"/>
+		<world_transform xyz="0.0 -53.00 0.3000" rpy="3.14159265 0.0 0.0"/>
+	</static>
+
+	<static name="IceFloeNorth" type="terrain">
+		<height_map filename="ice/ice_draft_north_16b.png"/>
+		<dimensions scalex="0.749064" scaley="0.752" height="13.8474"/>
+		<material name="SeaIce"/>
+		<look name="ice_underside" uv_scale="46.0"/>
+		<world_transform xyz="0.0 +53.00 0.3000" rpy="3.14159265 0.0 0.0"/>
+	</static>
+
+	<!-- Floe edges at the lead. 1.5 m deep to match the tapered level-ice margin, top at
+	     z = 0 because nothing may sit above the surface. Tucked under the last 0.4 m of each
+	     floe (y = -6.4..-6.0 and +6.0..+6.4), so the 12 m of open lead is not narrowed. -->
+	<static name="IceEdgeSouth" type="box">
+		<dimensions xyz="200.0 0.4 1.5"/>
+		<material name="SeaIce"/>
+		<look name="ice_edge" uv_mode="2"/>
+		<world_transform xyz="0.0 -6.2 0.75" rpy="0.0 0.0 0.0"/>
+	</static>
+
+	<static name="IceEdgeNorth" type="box">
+		<dimensions xyz="200.0 0.4 1.5"/>
+		<material name="SeaIce"/>
+		<look name="ice_edge" uv_mode="2"/>
+		<world_transform xyz="0.0 +6.2 0.75" rpy="0.0 0.0 0.0"/>
+	</static>
+
+	<!-- ==================== Seabed ====================
+	     Unflipped, so the usual seabed convention applies: the body spans world z in
+	     [origin.z - maxHeight, origin.z], i.e. 45..50 m. It exists so the down-looking DVL has
+	     something to bottom-lock on while the upward sensors work the ice.
+	     The stock 32 x 32 heightmap, not the 256 x 256 one: at 6.5 m per pixel the relief is
+	     coarse, but the bottom is 40 m below the vehicle in water this scene never lights, and
+	     the finer map costs 130k triangles in every render pass - as much as both ice floes
+	     together - to draw something nobody sees. -->
+	<static name="Seabed" type="terrain">
+		<height_map filename="terrain_small.png"/>
+		<dimensions scalex="6.5" scaley="6.5" height="5.0"/>
+		<material name="Seabed"/>
+		<look name="seabed" uv_scale="24.0"/>
+		<world_transform xyz="0.0 0.0 50.0" rpy="0.0 0.0 0.0"/>
+	</static>
+
+	<!-- Spawns under the open lead on level ice margins, heading +x. The big keel is about
+	     55 m dead ahead. -->
+	<include file="bluerov2_heavy.scn">
+		<arg name="robot_name" value="BLUEROV2"/>
+		<arg name="robot_position" value="-70.0 -12.0 3.0"/>
+	</include>
+</scenario>

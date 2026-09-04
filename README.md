@@ -82,6 +82,71 @@ seabed, two reference blocks and a neutrally buoyant marker to fly around. The h
 `bluerov2_heavy.scn` documents where every mass, drag and thruster coefficient came from, which
 figures were measured and which limitations remain.
 
+### Under the ice (this fork)
+
+An Arctic under-ice site for the same vehicle: a 200 x 200 m box of first-year pack ice north of
+Svalbard in 48 m of water, cut by one open lead.
+
+```console
+$ ./build/Tests/UnderIceTest.exe
+```
+
+The ice is a **ceiling, not scenery**. It is solid - the ROV cannot pass through it and will pin
+itself against it if you let go of the controls - and it is visible to every sensor that looks at
+it: an upward-looking sounder measures ice draft, an upward multibeam maps the draft across track,
+and the forward sonar picks keels out ahead. The vehicle spawns under level ice of 1.7 m draft, 6 m
+from the lead edge, flying a 2 m standoff below the canopy.
+
+Everything in [BlueROV2 Heavy](#bluerov2-heavy-this-fork) still applies - `UnderIceTest` reuses that
+app's piloting, thrust allocation and HUD unchanged - plus:
+
+| Key | Action |
+| --- | --- |
+| `C` | Tilt the bow camera: 0 / 45 / 90 degrees up. The real vehicle's camera is on a tilt servo, and under ice it lives at the top of its travel. |
+| `F` | Forward sonar display on / off |
+| `Z` | Ice standoff hold on / off. On by default: without it the vehicle, which is +2.0 N buoyant, simply rises until it is touching the canopy - at which point the clearance is a few centimetres, inside the sounder's blanking range, and every ice readout goes blank. Flying a standoff is what an under-ice survey actually does, and it is a use for the upward sonar rather than just a display of it. |
+
+The left column of the HUD adds ice clearance and draft, the across-track draft swath from the
+upward multibeam, and the draft along the track. `showSensors` is on, so the upward fan is drawn in
+the 3D view - the quickest way to see that the upward heads really are pointing up.
+
+Running straight ahead from the spawn the transect is level ice, then a 5-7 m keel about 60 m out,
+then level ice again, then a 10-13 m keel at 110-125 m. The deepest keel in the site is 14 m.
+
+#### The ice model
+
+`Tests/Data/tools/make_sea_ice.py` generates the assets; they are committed, so nothing in the
+build needs Python. Ice draft is isostatic - 1.6 m of first-year ice under 0.2 m of snow gives
+1.49 m - with band-limited thickness variability, refrozen nilas at 0.35 m, rafted patches at
+3.0 m, and pressure ridge keels drawn from an exponential distribution with a triangular
+cross-section and a 26-36 degree keel slope. The script's header documents every number and where
+it came from, including which choices are scenario decisions rather than statistics.
+
+Each floe is a `<static type="terrain">` **rotated 180 degrees about X** so it hangs as a ceiling.
+That rotation is not optional: `BuildTerrain` winds its faces to face the sky, and with the
+pipeline's back-face culling an unflipped sheet is invisible from below - to the pilot camera and to
+every rendered sonar - while still colliding perfectly. A height field is also the physically right
+representation, since ice draft genuinely is single-valued in position; the price is that overhangs
+and rafted undercuts cannot be expressed at all.
+
+The open lead is the one thing a single height field cannot do, so there are two floes with a gap
+between them. `Tests/Data/under_ice.scn` has the rest: the heightmap encoding arithmetic, why the
+water surface must be flat, why nothing may sit above `z = 0`, and why a material's `restitution`
+is doing double duty as its acoustic reflectivity.
+
+Worth knowing if you change the resolution: `make_sea_ice.py --resolution` only changes how finely
+the site is sampled, not the site itself, but it does change the `<dimensions>` and
+`<world_transform>` values the script prints - paste them, do not hand-edit them. The image-to-world
+row order was **measured**, not derived: raycasting up at 35 known points and fitting the four
+candidate row/column orders against the heightmap gives an rms of 3 mm for one of them and over a
+metre for the rest. If a future Stonefish changes that, redo the fit rather than reasoning about it.
+
+Frame rate is the thing to watch. `OpenGLPipeline` does no frustum culling, so the whole canopy is
+submitted for every render pass, and this scene has five. If it drops far enough that the cameras
+cannot be serviced every frame, the on-screen insets start to flicker. The knobs, in order of
+effect, are `--resolution` on the generator, the `RenderSettings` in `Tests/UnderIceTest/main.cpp`,
+and the number of vision sensors in the payload.
+
 ### Windows Support (this fork)
 
 Upstream _Stonefish_ is Linux-only. This fork builds and runs natively on **Windows x64** using the
@@ -116,7 +181,7 @@ SDL2, Freetype and GLM are the only external dependencies.
 
 #### Getting started
 
-**Run the examples.** The twelve example applications land in `build/Tests/`, together with the
+**Run the examples.** The thirteen example applications land in `build/Tests/`, together with the
 sixteen runtime DLLs they depend on (SDL2, Freetype and the MinGW / HarfBuzz / GLib chain), which
 the build copies there automatically. So they start from any shell, or by double-clicking them in
 Explorer - MSYS2 does not have to be on `PATH`, and the folder can be copied to a machine that has
@@ -133,6 +198,7 @@ $ ./build/Tests/UnderwaterTest.exe
 | `FloatingTest` | Surface vessel, buoyancy, a thruster - the shortest example to read |
 | `UnderwaterTest` | Full ocean, an AUV, sonars and cameras - the heaviest |
 | `BlueROV2Test` | BlueROV2 Heavy ROV, 8 thrusters, keyboard-flown on its onboard camera - see [above](#bluerov2-heavy-this-fork) |
+| `UnderIceTest` | The same ROV under Arctic sea ice - solid canopy, upward ice-draft sonar, forward sonar - see [above](#under-the-ice-this-fork) |
 | `FlyingTest`, `SlidingTest`, `JointsTest`, `CableTest` | Aerodynamics, friction, joints, cables |
 | `FluidDynamicsTest`, `CameraTest`, `LearningTest` | Hydrodynamics, vision sensors, ML interfacing |
 
@@ -146,7 +212,8 @@ $ ./build/Tests/UnderwaterTest.exe
 | `H` / `K` / `P` / `C` | Toggle the HUD / keymap / performance monitor / console |
 | `Esc` | Quit |
 
-In `BlueROV2Test` the keyboard flies the **vehicle** instead of the camera - see [BlueROV2 Heavy](#bluerov2-heavy-this-fork) above for the full control list.
+In `BlueROV2Test` and `UnderIceTest` the keyboard flies the **vehicle** instead of the camera - see
+[BlueROV2 Heavy](#bluerov2-heavy-this-fork) and [Under the ice](#under-the-ice-this-fork) above for the full control lists.
 
 
 **Write your own simulation.** Subclass `sf::SimulationManager`, implement `BuildScenario()`, and
