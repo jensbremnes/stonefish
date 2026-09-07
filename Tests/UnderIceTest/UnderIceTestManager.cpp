@@ -31,6 +31,7 @@
 #include <graphics/OpenGLTrackball.h>
 #include <sensors/scalar/Multibeam.h>
 #include <sensors/scalar/Profiler.h>
+#include <sensors/vision/ColorCamera.h>
 #include <sensors/vision/FLS.h>
 #include <utils/SystemUtil.hpp>
 
@@ -110,6 +111,24 @@ void UnderIceTestManager::BuildScenario()
 //! the open-water demo pay for rendering them every frame. Neither is worth it for five
 //! devices, so they are attached here instead.
 //!
+//! THE FRAME BUDGET. OpenGLPipeline renders every CONTINUOUS view each frame plus exactly ONE
+//! non-continuous view (OpenGLPipeline.cpp, "Update the queue of views needing update"): views
+//! that want an update are queued, and only one is taken off the queue per frame. Every camera
+//! and sonar here is non-continuous, so the sum of their rates is a hard budget against the
+//! frame rate, and this scene draws in about 67 ms - roughly 15 frames, and therefore 15 view
+//! updates, per second.
+//!
+//! The fit was already over that budget before this camera existed: a 30 Hz bow camera and a
+//! 5 Hz FLS ask for 35 updates a second against 15 available. The queue then never drains, and
+//! the symptom is the one recorded when an up-looking camera was first tried and removed - the
+//! continuous trackball view gets drawn after the insets and paints over them, so they flicker.
+//! The conclusion drawn at the time was that three rendered views is one too many; the real
+//! limit is the sum of their rates, and two 30 Hz views would have been just as bad.
+//!
+//! So the rates are set to fit: 8 + 3 + 3 = 14 with all three displayed, and UnderIceTestApp
+//! disables the OpenGL view behind anything whose display is switched off, which is what buys
+//! the margin back. A hidden camera used to render every frame for nobody.
+//!
 //! Robot::AddLinkSensor and AddVisionSensor only push onto the robot's own list; the handoff
 //! to the manager happens in Robot::AddToSimulation, which the parser has already run by the
 //! time we get here. Each device therefore needs BOTH the Add*ToRobot call AND an explicit
@@ -173,22 +192,44 @@ void UnderIceTestManager::AddIcePayload(sf::Robot* rov)
     //second, but each ping is a full render of the scene, and the display cannot be read any
     //faster than this anyway.
     sf::FLS* fls = new sf::FLS(underice::FLS, 256, 400, 90.0, 20.0, 0.5, 30.0,
-                               sf::ColorMap::HOT, sf::SonarOutputFormat::U8, 5.0);
+                               sf::ColorMap::HOT, sf::SonarOutputFormat::U8, underice::FLS_RATE);
     fls->setNoise(0.03, 0.04);
     rov->AddVisionSensor(fls, link,
                          sf::Transform(sf::Quaternion(M_PI_2, 0.0, M_PI_2 + flsTiltUp),
                                        sf::Vector3(0.24, 0.0, 0.05)));
     AddSensor(fls);
 
-    //--- Up-looking light --------------------------------------------------------------------
-    //There is deliberately NO second camera here. The bow camera tilts instead (UnderIceTestApp
-    //drives it through VisionSensor::setRelativeSensorFrame, which is what the real vehicle's
-    //tilt servo does), because a third rendered view is one too many: OpenGLPipeline keeps its
-    //views in a deque, updates a bounded number of them per frame and redraws the rest from
-    //their last texture, and once the queue stops draining the continuous trackball view can
-    //end up drawn after the insets and paint over them. Two vision sensors keep it draining.
+    //--- Forward pilot camera ---------------------------------------------------------------
+    //The scenario's own bow camera is on a tilt servo and under ice it lives at the top of its
+    //travel, aimed straight up at the canopy - which leaves the pilot with no forward view at
+    //all. This is that view: fixed, forward, and never tilted.
     //
-    //A light is an actuator, not a view, so this one costs nothing in that queue. It has to
+    //It looks out of the lower enclosure tube so it does not occupy the same point as the
+    //scenario camera in the upper one. A vision sensor looks along its own +Z with -Y as image
+    //up, so aiming it forward needs rpy = (pi/2, 0, pi/2) - and sf::Quaternion takes
+    //(yaw, pitch, roll), the REVERSE of the XML rpy order.
+    //
+    //640x360 rather than the bow camera's 1280x720: it is shown as an inset a few hundred
+    //pixels wide, and a camera render is a full pass over the scene.
+    sf::ColorCamera* fwdCam = new sf::ColorCamera(underice::FWD_CAMERA,
+                                                  underice::FWD_CAM_RES_X, underice::FWD_CAM_RES_Y,
+                                                  80.0, underice::FWD_CAM_RATE);
+    rov->AddVisionSensor(fwdCam, link,
+                         sf::Transform(sf::Quaternion(M_PI_2, 0.0, M_PI_2),
+                                       sf::Vector3(underice::FWD_CAM_X, 0.0, underice::FWD_CAM_Z)));
+    AddSensor(fwdCam);
+
+    //--- Turn the bow camera down -----------------------------------------------------------
+    //See THE FRAME BUDGET below. It is watching ice drift slowly past a metre or two overhead;
+    //it does not need the 30 Hz the open-water pilot view is given.
+    sf::Sensor* bowCam = rov->getSensor(std::string(underice::ROBOT) + "/camera");
+    if(bowCam != nullptr)
+        bowCam->setUpdateFrequency(underice::ICE_CAM_RATE);
+    else
+        cWarning("Bow camera not found - it will keep its open-water rate and may cost frames.");
+
+    //--- Up-looking light --------------------------------------------------------------------
+    //A light is an actuator, not a view, so this one costs nothing in the frame budget. It has to
     //exist: the two Lumens on the standard fit are aimed forward and 15 degrees DOWN, and
     //light none of the canopy. A <light> emits along its own +Z, so it takes the same rotation
     //a camera would - Rz(-pi/2)Rx(pi) puts that axis on body -Z, straight up.
@@ -197,6 +238,6 @@ void UnderIceTestManager::AddIcePayload(sf::Robot* rov)
     rov->AddLinkActuator(iceLight, link, sf::Transform(lookUp, sf::Vector3(0.10, 0.0, underice::LIGHT_Z)));
     AddActuator(iceLight);
 
-    cInfo("Under-ice payload attached: upward sounder, %d-beam upward swath, forward sonar and up-light.",
-          (int)(swath->getNumOfChannels()));
+    cInfo("Under-ice payload attached: upward sounder, %d-beam upward swath, forward sonar,"
+          " forward camera and up-light.", (int)(swath->getNumOfChannels()));
 }

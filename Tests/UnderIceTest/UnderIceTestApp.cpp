@@ -32,6 +32,7 @@
 #include <sensors/scalar/Profiler.h>
 #include <sensors/vision/ColorCamera.h>
 #include <sensors/vision/FLS.h>
+#include <graphics/OpenGLView.h>
 
 #include <algorithm>
 #include <cmath>
@@ -63,6 +64,11 @@ namespace
     //! Gap between a screen display and the window edge, in pixels.
     const unsigned int MARGIN = 10;
     const float FLS_SCALE = 0.35f;       //  566 x 400 -> 198 x 140
+    //! Ice camera inset: 640 x 360 at 0.35 is 224 x 126, which drops into the right hand
+    //! column between the autopilot panel (ends at y = 288) and the pilot view along the
+    //! bottom. The bow camera is 1280 x 720, so it needs half that scale for the same box.
+    const float ICE_CAM_SCALE = 0.175f;  // 1280 x 720 -> 224 x 126
+    const GLfloat ICE_CAM_Y = 300.f;
 
     //! Detents for the bow camera's tilt, in degrees above the horizontal. The real BlueROV2
     //! carries its camera on a tilt servo with about this range, and under ice it lives at the
@@ -91,7 +97,10 @@ UnderIceTestApp::UnderIceTestApp(std::string dataDirPath, sf::RenderSettings s, 
       altimeter_(nullptr),
       swath_(nullptr),
       fls_(nullptr),
+      iceCamera_(nullptr),
+      fwdCamera_(nullptr),
       showFLS_(true),
+      showIceCamera_(true),
       camTilt_(2)
 {
     //Start on the standoff rather than at whatever clearance the spawn happens to give. Without
@@ -128,17 +137,49 @@ void UnderIceTestApp::ResolvePayload()
     swath_ = dynamic_cast<sf::Multibeam*>(rov->getSensor(underice::MULTIBEAM));
     fls_ = dynamic_cast<sf::FLS*>(rov->getSensor(underice::FLS));
 
-    if(altimeter_ == nullptr || swath_ == nullptr || fls_ == nullptr)
+    fwdCamera_ = dynamic_cast<sf::ColorCamera*>(rov->getSensor(underice::FWD_CAMERA));
+
+    if(altimeter_ == nullptr || swath_ == nullptr || fls_ == nullptr || fwdCamera_ == nullptr)
         cError("Part of the under-ice payload could not be resolved - some readouts will be blank.");
 
+    //Swap which camera the inherited pilot view shows.
+    //
+    //The base class resolves camera_ to the scenario's bow camera and lets V cycle its inset.
+    //Under ice that camera is aimed straight up at the canopy, so what V ought to be cycling is
+    //the forward picture instead. Resolve the base class's camera first, take it as the ice
+    //camera, then repoint camera_ at the forward one - all before the base class has had a
+    //chance to display anything, because ProcessInputs() calls this before its own.
+    if(!cameraResolved_)
+        ApplyCameraView();
+    iceCamera_ = camera_;
+    if(fwdCamera_ != nullptr)
+    {
+        if(iceCamera_ != nullptr)
+            iceCamera_->setDisplayOnScreen(false, 0, 0, 1.f); //undo what ApplyCameraView just did
+        camera_ = fwdCamera_;
+        ApplyCameraView();
+    }
+
     ApplyFLSView();
+    ApplyIceCameraView();
     ApplyCameraTilt();
+}
+
+void UnderIceTestApp::SetViewActive(sf::VisionSensor* sensor, bool active)
+{
+    if(sensor == nullptr)
+        return;
+    sf::OpenGLView* view = sensor->getOpenGLView();
+    if(view != nullptr)
+        view->setEnabled(active);
 }
 
 void UnderIceTestApp::ApplyFLSView()
 {
     if(fls_ == nullptr)
         return;
+
+    SetViewActive(fls_, showFLS_);
 
     //An FLS display is not the beam x bin grid: getDisplayResolution widens it to the fan's
     //chord, 2*sin(fovH/2)*bins across. Placement is from the TOP left, the same origin as the
@@ -153,17 +194,37 @@ void UnderIceTestApp::ApplyFLSView()
 
 void UnderIceTestApp::ApplyCameraTilt()
 {
-    if(!cameraResolved_)
-        ApplyCameraView();      //resolves the base class's bow camera into camera_
-    if(camera_ == nullptr)
+    if(iceCamera_ == nullptr)
         return;
 
     //bluerov2_heavy.scn derives rpy = (pi/2 - a, 0, pi/2) for a vision sensor aimed forward
     //and tilted DOWN by a, so tilting UP is the same expression with a negated. The mount
     //position is unchanged; only the aim moves, which is what a tilt servo does.
     const double a = CAM_TILT_DEG[camTilt_ % CAM_TILT_COUNT] * M_PI / 180.0;
-    camera_->setRelativeSensorFrame(sf::Transform(sf::Quaternion(M_PI_2, 0.0, M_PI_2 + a),
-                                                  sf::Vector3(CAM_X, 0.0, 0.0)));
+    iceCamera_->setRelativeSensorFrame(sf::Transform(sf::Quaternion(M_PI_2, 0.0, M_PI_2 + a),
+                                                     sf::Vector3(CAM_X, 0.0, 0.0)));
+}
+
+//! Ice camera inset, in the right hand column between the autopilot panel and the pilot view.
+void UnderIceTestApp::ApplyIceCameraView()
+{
+    if(iceCamera_ == nullptr)
+        return;
+
+    SetViewActive(iceCamera_, showIceCamera_);
+    if(!showIceCamera_)
+    {
+        iceCamera_->setDisplayOnScreen(false, 0, 0, 1.f);
+        return;
+    }
+
+    unsigned int rx, ry;
+    iceCamera_->getResolution(rx, ry);
+    const unsigned int dispW = (unsigned int)(rx * ICE_CAM_SCALE);
+    const unsigned int dispH = (unsigned int)(ry * ICE_CAM_SCALE);
+    const unsigned int w = getWindowWidth();
+    iceCamera_->setDisplayOnScreen(true, w > dispW + MARGIN ? w - dispW - MARGIN : 0,
+                                   ICE_CAM_Y, ICE_CAM_SCALE);
 }
 
 void UnderIceTestApp::ProcessInputs()
@@ -174,13 +235,21 @@ void UnderIceTestApp::ProcessInputs()
 
 void UnderIceTestApp::KeyDown(SDL_Event* event)
 {
-    //C tilts the bow camera. There is no separate up-looking camera on purpose - see the
-    //payload notes in UnderIceTestManager for why a third rendered view is one too many.
+    //C tilts the ice camera - the scenario's own bow camera, on what the real vehicle carries as
+    //a tilt servo. The forward view is a separate fixed camera; see ResolvePayload().
     if(event->key.keysym.sym == SDLK_c)
     {
         camTilt_ = (camTilt_ + 1) % CAM_TILT_COUNT;
         ApplyCameraTilt();
         cInfo("Camera tilt: %.0f deg up.", CAM_TILT_DEG[camTilt_]);
+        return;
+    }
+
+    if(event->key.keysym.sym == SDLK_u)
+    {
+        showIceCamera_ = !showIceCamera_;
+        cInfo(showIceCamera_ ? "Ice camera on." : "Ice camera off.");
+        ApplyIceCameraView();
         return;
     }
 
@@ -305,8 +374,8 @@ void UnderIceTestApp::DoTelemetry()
     //panel in the right hand column, off the DVL. What belongs here is the draft instrument,
     //which reads the Profiler and is a different measurement of a different thing.
 
-    snprintf(buf, sizeof(buf), "SONAR: %s [F]   CAM TILT: %.0f deg up [C]",
-             showFLS_ ? "ON" : "OFF", CAM_TILT_DEG[camTilt_]);
+    snprintf(buf, sizeof(buf), "SONAR %s [F]  ICE CAM %s [U]  TILT %.0f [C]",
+             showFLS_ ? "ON" : "OFF", showIceCamera_ ? "ON" : "OFF", CAM_TILT_DEG[camTilt_]);
     getGUI()->DoLabel(tx, ty, std::string(buf));
 }
 

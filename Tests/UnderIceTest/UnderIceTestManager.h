@@ -43,6 +43,29 @@ namespace underice
     constexpr const char* MULTIBEAM = "ice_multibeam";
     constexpr const char* FLS = "ice_fls";
     constexpr const char* LIGHT = "ice_light";
+    constexpr const char* FWD_CAMERA = "ice_fwd_camera";
+
+    //! Where the forward pilot camera sits, in the NED body frame.
+    //!
+    //! The BlueROV2's bow splits into two enclosure tubes, at z = -0.04..0.05 and
+    //! z = 0.10..0.14 (see CAMERA AND LIGHTING in bluerov2_heavy.scn). The scenario's own
+    //! camera looks out of the upper one at z = 0; this looks out of the lower one. x = 0.24
+    //! is just clear of the visual hull, which reaches x = 0.222 - the same reason the
+    //! scenario camera sits there rather than at 0.22, which put the viewpoint inside the dome.
+    constexpr double FWD_CAM_X = 0.24;
+    constexpr double FWD_CAM_Z = 0.12;
+
+    //! Resolution and rate of the forward camera, and the rate the scenario's bow camera is
+    //! turned down to under ice. Both are set by the render budget rather than by realism -
+    //! see THE FRAME BUDGET in UnderIceTestManager.cpp.
+    constexpr unsigned int FWD_CAM_RES_X = 640;
+    constexpr unsigned int FWD_CAM_RES_Y = 360;
+    //! 8 + 3 + 3 = 14 view updates a second against the ~16 frames this scene manages, so the
+    //! queue drains with a little margin. The pilot camera takes most of the budget because it
+    //! is the one being flown on; the ice above and a keel 30 m ahead both move slowly.
+    constexpr double FWD_CAM_RATE = 8.0;
+    constexpr double ICE_CAM_RATE = 3.0;
+    constexpr double FLS_RATE = 3.0;
 
     //! Height of the upward-looking heads above the vehicle origin, in the NED body frame,
     //! so negative is up. The physics hull spans z = -0.052 .. 0.184, so this sits the

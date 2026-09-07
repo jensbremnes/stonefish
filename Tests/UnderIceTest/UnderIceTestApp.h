@@ -43,7 +43,9 @@
 
 namespace sf
 {
+    class ColorCamera;
     class FLS;
+    class VisionSensor;
     class Multibeam;
     class Profiler;
     class SimulationManager;
@@ -71,8 +73,16 @@ private:
     void ResolvePayload();
     //! Pushes the FLS display state to the sensor.
     void ApplyFLSView();
-    //! Re-aims the bow camera to the current tilt detent.
+    //! Pushes the ice camera's inset state to the sensor.
+    void ApplyIceCameraView();
+    //! Re-aims the ice camera to the current tilt detent.
     void ApplyCameraTilt();
+    //! Switches a vision sensor's OpenGL view on or off.
+    //!
+    //! The pipeline renders one non-continuous view per frame, so an undisplayed camera that
+    //! still renders costs a real share of the frame budget for a picture nobody sees. See
+    //! THE FRAME BUDGET in UnderIceTestManager.cpp.
+    static void SetViewActive(sf::VisionSensor* sensor, bool active);
     //! What the upward heads can say about the canopy right now.
     enum class Overhead
     {
@@ -95,8 +105,17 @@ private:
     sf::Multibeam* swath_;
     sf::FLS* fls_;
 
+    //! The scenario's bow camera, which under ice is the ICE camera: it is on a tilt servo and
+    //! starts at the top of its travel, aimed at the canopy. The base class's camera_ is
+    //! repointed at fwdCamera_ in ResolvePayload(), so the inherited pilot view (V) shows the
+    //! forward picture and this one gets its own inset on U.
+    sf::ColorCamera* iceCamera_;
+    //! Fixed forward-looking camera, added by UnderIceTestManager. This is the pilot view.
+    sf::ColorCamera* fwdCamera_;
+
     bool showFLS_;
-    unsigned int camTilt_;  //!< index into the bow camera's tilt detents
+    bool showIceCamera_;
+    unsigned int camTilt_;  //!< index into the ice camera's tilt detents
 
     //! Scratch for the across-track swath plot, kept between frames so the HUD does not
     //! reallocate it every time it draws.

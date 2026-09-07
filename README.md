@@ -167,18 +167,41 @@ the forward sonar picks keels out ahead, and the **DVL is turned over to look up
 clearance below the ice and speed relative to it rather than over the ground. The vehicle spawns under level ice of 1.7 m draft, 6 m
 from the lead edge, flying a 2 m standoff below the canopy.
 
+**There are two cameras.** The scenario's bow camera is the *ice* camera: it tilts, and it starts
+aimed straight up at the canopy, which leaves nothing to fly on. So `UnderIceTest` adds a second,
+fixed **forward-looking camera** in the lower of the bow's two enclosure tubes, and that is the one
+the pilot view (`V`) shows. The ice camera gets its own smaller inset above it.
+
 Everything in [BlueROV2 Heavy](#bluerov2-heavy-this-fork) still applies - `UnderIceTest` reuses that
-app's piloting, thrust allocation and HUD unchanged - plus:
+app's piloting, thrust allocation, autopilot and HUD unchanged - plus:
 
 | Key | Action |
 | --- | --- |
-| `C` | Tilt the bow camera: 0 / 45 / 90 degrees up. The real vehicle's camera is on a tilt servo, and under ice it lives at the top of its travel. |
+| `C` | Tilt the **ice camera**: 0 / 45 / 90 degrees up. This is the scenario's bow camera; the real vehicle carries it on a tilt servo, and under ice it lives at the top of its travel. |
+| `U` | Ice camera inset on / off |
 | `F` | Forward sonar display on / off |
+| `V` | Cycle the **forward camera** inset, as it does in the open-water demo. Under ice this is the second, fixed camera rather than the tiltable one. |
 | `Z` | The inherited vertical hold, which here starts in **altitude** at a 2 m standoff below the canopy, flown off an upward-looking DVL. Without it the vehicle, which is +2.0 N buoyant, simply rises until it is touching the ice - at which point the clearance is a few centimetres, inside every upward sensor's blanking range, and the ice readouts go blank. Flying a standoff is what an under-ice survey actually does. `Q` / `E` move the standoff; the measured hold is +-0.02 m. |
 
 The left column of the HUD adds ice clearance and draft, the across-track draft swath from the
-upward multibeam, and the draft along the track. `showSensors` is on, so the upward fan is drawn in
-the 3D view - the quickest way to see that the upward heads really are pointing up.
+upward multibeam, and the draft along the track. The right column carries the sonar, the autopilot
+panel, the ice camera and the pilot view, top to bottom. `showSensors` is on, so the upward fan is
+drawn in the 3D view - the quickest way to see that the upward heads really are pointing up.
+
+#### The frame budget
+
+Worth knowing before adding a fourth camera. `OpenGLPipeline` renders every *continuous* view each
+frame plus **exactly one** non-continuous view: cameras and sonars queue up, and one comes off the
+queue per frame. Every rendered sensor here is non-continuous, so **the sum of their rates is a hard
+budget against the frame rate**, and this scene draws in about 67 ms - roughly 15 frames, so 15 view
+updates, per second.
+
+The fit was already over that budget before the forward camera existed: a 30 Hz bow camera and a
+5 Hz sonar ask for 35 updates a second against 15 available, the queue never drains, and the insets
+flicker. So the rates are set to fit - 8 Hz forward camera, 3 Hz ice camera, 3 Hz sonar - and
+anything whose display is switched off has its view disabled outright, which is where the margin
+comes from. A hidden camera used to render every frame for nobody. Turning the ice camera (`U`) or
+the sonar (`F`) off hands its share back to the pilot view.
 
 Running straight ahead from the spawn the transect is level ice, then a 5-7 m keel about 60 m out,
 then level ice again, then a 10-13 m keel at 110-125 m. The deepest keel in the site is 14 m.

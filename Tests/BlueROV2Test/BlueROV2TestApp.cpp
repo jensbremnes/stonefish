@@ -218,6 +218,14 @@ namespace
     //Gap between the small camera inset and the window edge, in pixels
     const unsigned int MARGIN = 10;
 
+    //! Width of the SMALL camera inset, in pixels.
+    //!
+    //! A width rather than a scale factor, so the inset stays the same size on screen whatever
+    //! resolution the camera behind it happens to have. This was 0.35 of the sensor resolution,
+    //! which is the same 448 px for the 1280x720 bow camera - but it silently halved the pilot
+    //! view when UnderIceTest put a cheaper 640x360 camera behind it.
+    const unsigned int SMALL_VIEW_W = 448;
+
     //Autopilot panel geometry, in the right hand column: clear of UnderIceTest's forward sonar
     //display above it and of the pilot camera inset below it. The left column is full.
     const GLfloat AP_PANEL_W = 250.f;
@@ -849,7 +857,7 @@ void BlueROV2TestApp::ApplyCameraView()
     if(cameraView_ == CameraView::LARGE)
         scale = (float)w / (float)resX; //Full window width, HUD panels stay visible underneath
     else
-        scale = 0.35f;
+        scale = (float)SMALL_VIEW_W / (float)resX;
 
     const unsigned int dispW = (unsigned int)(resX * scale);
     const unsigned int dispH = (unsigned int)(resY * scale);
