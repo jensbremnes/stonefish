@@ -21,12 +21,17 @@
 //
 //  BlueROV2TestApp plus the under-ice instrumentation: ice clearance and draft on the HUD,
 //  an across-track ice-draft swath, a draft trace along the track, screen displays for the
-//  forward sonar, a tilt on the bow camera so it can be aimed at the canopy, and a standoff
-//  hold that flies the vehicle a fixed distance below the canopy off the upward sounder.
+//  forward sonar, and a tilt on the bow camera so it can be aimed at the canopy.
 //
-//  Piloting, thrust allocation, the demand ramp and the forward camera inset are all
-//  inherited unchanged, so Tab / W A S D / Q E / , . / arrows / Space / V / H behave exactly
-//  as they do in BlueROV2Test.
+//  Piloting, thrust allocation, the demand ramp, the autopilot and the forward camera inset
+//  are all inherited unchanged, so Tab / W A S D / Q E / , . / arrows / Space / V / H / Z / X /
+//  B behave exactly as they do in BlueROV2Test.
+//
+//  The standoff below the canopy is the inherited ALTITUDE mode, which this app simply starts
+//  in: bluerov2_heavy.scn is included here with dvl_up="1", so the DVL looks at the ice and its
+//  altitude channel is the clearance below it. The upward Profiler and Multibeam that remain
+//  here measure ice DRAFT for the readouts and the plots, which is a different quantity and
+//  not part of any loop.
 //
 
 #ifndef __Stonefish__UnderIceTestApp__
@@ -53,14 +58,12 @@ public:
     void DoHUD() override;
     //! Resolves the payload on the first frame, then pilots as the base class does.
     void ProcessInputs() override;
-    //! Adds C (ice camera) and F (forward sonar) on top of the inherited bindings.
+    //! Adds C (camera tilt) and F (forward sonar) on top of the inherited bindings.
     void KeyDown(SDL_Event* event) override;
 
 protected:
     //! Vehicle telemetry, then the ice panel.
     void DoTelemetry() override;
-    //! Closes the standoff loop around the heave demand, unless the pilot is on the heave keys.
-    void AugmentDemands() override;
 
 private:
     //! Resolves the payload sensors. They do not exist at construction time - the scenario is
@@ -94,8 +97,6 @@ private:
 
     bool showFLS_;
     unsigned int camTilt_;  //!< index into the bow camera's tilt detents
-    bool iceHold_;          //!< standoff hold engaged
-    sf::Scalar holdDemand_; //!< the heave the hold last asked for, for the HUD
 
     //! Scratch for the across-track swath plot, kept between frames so the HUD does not
     //! reallocate it every time it draws.

@@ -7,7 +7,12 @@
         <include file="bluerov2_heavy.scn">
             <arg name="robot_name" value="BLUEROV2"/>
             <arg name="robot_position" value="0.0 0.0 2.0"/>
+            <arg name="dvl_up" value="0"/>
         </include>
+
+    dvl_up picks which way the DVL looks - 0 down at the seabed, 1 up at an ice canopy. See
+    THE DVL AND WHICH WAY IT LOOKS below. All three arguments are required: the parser only
+    substitutes $(arg ...) when the include passes at least one, and there are no defaults.
 
     The parent file must define the material "Neutral". Frame convention is NED:
     X forward, Y starboard, Z down.
@@ -160,6 +165,46 @@
     The picture is NOT displayed by this file. Colour cameras have no <display> element in
     ScenarioParser - the only route is Camera::setDisplayOnScreen from C++, which BlueROV2Test
     does, cycling the inset size on the V key.
+
+    ======================= THE DVL AND WHICH WAY IT LOOKS =======================
+    DVL::InternalUpdate builds its four beams around the sensor frame's +Z and then multiplies
+    the whole bundle by dirFactor = beamPosZ ? +1 : -1. ScenarioParser defaults beam_positive_z
+    to FALSE, so with no <specs beam_positive_z> the beams fire along the sensor frame's -Z.
+    That is why the mount carries a roll of pi: it sends sensor -Z to body +Z, which in NED is
+    down. Removing the roll leaves the beams on body -Z, i.e. straight UP.
+
+    dvl_up="0" therefore aims the DVL at the seabed and dvl_up="1" aims it at whatever is
+    overhead. Two channels change meaning with it:
+
+        channel 3, "Altitude"   distance to the seabed, or to the ice canopy
+        channels 0-2, velocity  speed over ground, or speed relative to the ice
+
+    Altitude is minRange*cos(beamAngle) taken over the four beams, so it reports the NEAREST
+    of them and it is measured perpendicular to the SENSOR, not to the world. A consumer that
+    wants a vertical distance while the vehicle is pitched or rolled must scale it by
+    cos(pitch)*cos(roll). When no beam returns, the channel reads altitude_max (50.0) and
+    channel 7, "Status", reads 3.
+
+    Do not flip this on for a scenario with nothing overhead. The ocean surface is not a
+    collision body, so an upward DVL in open water finds nothing at all: altitude pins at
+    50.0, status sits at 3, and the velocity channels go to zero. bluerov2_test.scn passes 0
+    and under_ice.scn passes 1.
+
+    ============================ SENSORS AND THE AUTOPILOT ============================
+    BlueROV2TestApp closes its depth, altitude, heading and attitude holds around the sensors
+    below rather than around the rigid body, so the numbers in this file are what the
+    autopilot actually flies on:
+
+        pressure    gauge Pa; depth = p/(rho*g). The head is at z = +0.10, so the app rotates
+                    that offset by the measured attitude to recover the depth of the origin.
+        imu         channels 0-2 roll/pitch/yaw, 3-5 body rates. The rates feed the D terms
+                    directly, which is why no loop has to differentiate a noisy angle.
+        dvl         channel 3 altitude, channel 7 status. See above.
+
+    The IMU heading noise was 0.05 rad with yaw_drift 0.001 rad/s. That is a free-gyro model,
+    and it walks about 3.4 deg per minute - a heading hold follows it faithfully off course.
+    The real vehicle carries a magnetometer-aided AHRS, so it is now 0.02 rad (1.1 deg) with
+    no drift. Roll and pitch are unchanged at 0.01 rad.
 
     ============================== MEASURED BEHAVIOUR ==============================
     Full surge, free-running, fully submerged, still water:
@@ -465,13 +510,13 @@
 			<link name="Vehicle"/>
 			<origin rpy="0.0 0.0 0.0" xyz="0.0 0.0 0.0"/>
 			<range angular_velocity="10.0 10.0 5.0" linear_acceleration="10.0"/>
-			<noise angle="0.01 0.01 0.05" angular_velocity="0.05" yaw_drift="0.001" linear_acceleration="0.1"/>
+			<noise angle="0.01 0.01 0.02" angular_velocity="0.05" yaw_drift="0.0" linear_acceleration="0.1"/>
 		</sensor>
 
 		<sensor name="dvl" type="dvl" rate="10.0">
 			<history samples="1"/>
 			<link name="Vehicle"/>
-			<origin rpy="3.1416 0.0 -0.785" xyz="0.0 0.0 0.115"/>
+			<origin rpy="${(1 - $(arg dvl_up)) * pi} 0.0 -0.785" xyz="0.0 0.0 0.115"/>
 			<specs beam_angle="30.0"/>
 			<range velocity="5.0 5.0 5.0" altitude_min="0.3" altitude_max="50.0"/>
 			<water_layer minimum_layer_size="2.0" boundary_near="5.0" boundary_far="20.0"/>

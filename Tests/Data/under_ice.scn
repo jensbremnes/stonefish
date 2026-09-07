@@ -275,5 +275,6 @@
 	<include file="bluerov2_heavy.scn">
 		<arg name="robot_name" value="BLUEROV2"/>
 		<arg name="robot_position" value="-70.0 -12.0 3.0"/>
+		<arg name="dvl_up" value="1"/>
 	</include>
 </scenario>

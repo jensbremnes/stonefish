@@ -25,13 +25,19 @@ camera and back again; the active mode is shown on the HUD along with speed, dep
 | `Q` / `E` | Heave - up / down |
 | `Up` / `Down` | Pitch trim |
 | `Left` / `Right` | Roll trim |
-| `Space` | All stop |
+| `Space` | All stop, and park every autopilot setpoint where the vehicle is |
+| `Z` | Vertical hold: off / depth / altitude |
+| `X` | Heading hold on / off |
+| `B` | Attitude hold on / off (pitch and roll) |
 | `V` | Cycle the onboard camera - bottom-right inset, full width, off |
 | `Tab` | Swap the keys between the vehicle and the scene camera |
 | `H` | Hide the HUD; piloting carries on |
 
 Mouse control of the scene camera (drag to rotate, wheel to zoom) works in both modes, and the six
 demand sliders on the HUD are a second way in.
+
+**When a hold is engaged, its keys move the setpoint instead of commanding thrust** - see
+[Autopilot](#autopilot) below.
 
 #### Control feel
 
@@ -54,6 +60,62 @@ surge cap is picked so that full ahead gives the BlueROV2's published ~1.5 m/s i
 model's unthrottled 1.83 m/s. All of these are named constants at the top of
 `Tests/BlueROV2Test/BlueROV2TestApp.cpp`, and the sliders still reach 1.0 if you want the rest.
 
+#### Autopilot
+
+Depth, altitude, heading, pitch and roll all hold themselves, closed around the onboard pressure
+sensor, IMU and DVL. All three modes are **on at startup** - the vehicle is +2.0 N buoyant with only
+2.30 Nm/rad of restoring stiffness, so left open-loop it rises and wanders and the pilot spends the
+whole time trimming.
+
+The point is that **the motion keys become setpoint controls**. You do not fly the thrusters, you
+fly the targets, and the vehicle gets itself there and stays:
+
+| Mode | Key | Engaged, these move the setpoint | Rate |
+| --- | --- | --- | --- |
+| Vertical: depth | `Z` | `Q` / `E` - shallower / deeper | 0.3 m/s |
+| Vertical: altitude | `Z` | `Q` / `E` - closer / further from the surface the DVL faces | 0.3 m/s, 0.5-15 m |
+| Heading | `X` | `A` / `D` - port / starboard | 30 deg/s |
+| Pitch | `B` | `Up` / `Down` | 15 deg/s, +-30 deg |
+| Roll | `B` | `Left` / `Right` | 15 deg/s, +-30 deg |
+
+Surge and sway stay fully manual in every mode. Turning a mode off hands that axis straight back.
+`Space` stops the vehicle *and* parks every setpoint where it currently is, so it holds position
+there rather than flying back to a target you set a minute ago.
+
+Measured, against `bluerov2_test.scn`:
+
+| | |
+| --- | --- |
+| Depth, tracking a 2 m move at the key rate | within 0.26 m, 0.15 m overshoot, settled in ~4 s |
+| Depth, holding | +-0.02 m |
+| Heading, 90 deg turn at the key rate | arrives with no overshoot, holds +-1.5 deg |
+| Pitch, 15 deg held through full surge | +-1 deg |
+| Ice standoff, 2 m under the canopy | +-0.02 m |
+
+That pitch figure is worth singling out. The vehicle settles about **9 degrees nose-down at full
+surge** open-loop, an unexplained trim documented at length in the header of `bluerov2_heavy.scn`.
+With attitude hold on it sits at whatever you asked for instead.
+
+Every gain is a named constant at the top of `Tests/BlueROV2Test/BlueROV2TestApp.cpp`, with the
+measurement that set it written beside it. Three are worth knowing about because they are not
+obvious:
+
+- **The vertical integrator is seeded at 0.098, not 0.010.** Thrust is quadratic in the normalised
+  setpoint, so offsetting +2.0 N of buoyancy across four 51.5 N units needs `sqrt(2.0/(4*51.5))`.
+  Reading it as linear leaves the vehicle rising while the integral winds in.
+- **The altitude loop takes its damping from the pressure sensor, not the DVL.** Differentiating a
+  10 Hz altitude that steps as its four slant beams cross ice costs so much phase that the D term
+  arrived 57 degrees late and drove a +-0.6 m porpoise instead of damping it. Damping should oppose
+  the *vehicle's* vertical motion, which is what a pressure sensor measures directly - and it should
+  not fight the slope of the terrain, which is the other half of what the DVL sees.
+- **Roll runs at 0.55 of the pitch gains.** The vertical thrusters sit at `x = +-0.12` but
+  `y = +-0.218`, so the same demand makes 1.8x the roll moment. One set of gains on both axes held
+  pitch to +-1 deg while roll sat in a 2 Hz limit cycle.
+
+If the DVL loses its return, altitude hold **degrades to depth hold** at the depth where the track
+was lost, says so on the HUD, and picks the altitude back up by itself. That makes it safe to leave
+engaged over an open lead.
+
 #### Onboard camera
 
 A forward-looking 1280x720 low-light camera sits in the bow at the height of the electronics
@@ -74,8 +136,15 @@ into any scene:
 <include file="bluerov2_heavy.scn">
     <arg name="robot_name" value="BLUEROV2"/>
     <arg name="robot_position" value="0.0 0.0 3.0"/>
+    <arg name="dvl_up" value="0"/>
 </include>
 ```
+
+`dvl_up` picks which way the DVL looks: `0` down at the seabed, `1` up at an ice canopy. It decides
+what the altitude channel means and therefore what altitude hold flies against. Do not set it to `1`
+in a scene with nothing overhead - the ocean surface is not a collision body, so the beams find
+nothing at all. All three arguments are required; the parser only substitutes `$(arg ...)` when the
+include passes at least one, and there are no defaults.
 
 `Tests/Data/bluerov2_test.scn` is the demo scene that includes it - a shallow-water site with a
 seabed, two reference blocks and a neutrally buoyant marker to fly around. The header of
@@ -94,7 +163,8 @@ $ ./build/Tests/UnderIceTest.exe
 The ice is a **ceiling, not scenery**. It is solid - the ROV cannot pass through it and will pin
 itself against it if you let go of the controls - and it is visible to every sensor that looks at
 it: an upward-looking sounder measures ice draft, an upward multibeam maps the draft across track,
-and the forward sonar picks keels out ahead. The vehicle spawns under level ice of 1.7 m draft, 6 m
+the forward sonar picks keels out ahead, and the **DVL is turned over to look up**, so it reports
+clearance below the ice and speed relative to it rather than over the ground. The vehicle spawns under level ice of 1.7 m draft, 6 m
 from the lead edge, flying a 2 m standoff below the canopy.
 
 Everything in [BlueROV2 Heavy](#bluerov2-heavy-this-fork) still applies - `UnderIceTest` reuses that
@@ -104,7 +174,7 @@ app's piloting, thrust allocation and HUD unchanged - plus:
 | --- | --- |
 | `C` | Tilt the bow camera: 0 / 45 / 90 degrees up. The real vehicle's camera is on a tilt servo, and under ice it lives at the top of its travel. |
 | `F` | Forward sonar display on / off |
-| `Z` | Ice standoff hold on / off. On by default: without it the vehicle, which is +2.0 N buoyant, simply rises until it is touching the canopy - at which point the clearance is a few centimetres, inside the sounder's blanking range, and every ice readout goes blank. Flying a standoff is what an under-ice survey actually does, and it is a use for the upward sonar rather than just a display of it. |
+| `Z` | The inherited vertical hold, which here starts in **altitude** at a 2 m standoff below the canopy, flown off an upward-looking DVL. Without it the vehicle, which is +2.0 N buoyant, simply rises until it is touching the ice - at which point the clearance is a few centimetres, inside every upward sensor's blanking range, and the ice readouts go blank. Flying a standoff is what an under-ice survey actually does. `Q` / `E` move the standoff; the measured hold is +-0.02 m. |
 
 The left column of the HUD adds ice clearance and draft, the across-track draft swath from the
 upward multibeam, and the draft along the track. `showSensors` is on, so the upward fan is drawn in

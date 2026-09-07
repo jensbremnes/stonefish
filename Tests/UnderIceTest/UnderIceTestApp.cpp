@@ -54,17 +54,11 @@ namespace
     //! so deeper ice draws lower - the way it hangs.
     const sf::Scalar DRAFT_PLOT_MAX = sf::Scalar(8.0);
 
-    //! Standoff the ice hold flies at, in metres below the canopy. Far enough out of the
-    //! 0.2 m blanking range to keep the sounder reporting, close enough that the camera and
-    //! the lights still reach the ice.
-    const sf::Scalar HOLD_STANDOFF = sf::Scalar(2.0);
-    //! Heave demand per metre of standoff error, and the cap on it. Deliberately gentle: the
-    //! vehicle has no vertical damping to speak of and a stiff loop just makes it porpoise.
-    const sf::Scalar HOLD_GAIN = sf::Scalar(0.25);
-    const sf::Scalar HOLD_LIMIT = sf::Scalar(0.30);
-    //! Heave applied when the sounder has nothing. Positive is DOWN, so this is what backs the
-    //! vehicle out from under the canopy when it has drifted up inside the blanking range.
-    const sf::Scalar HOLD_RECOVER = sf::Scalar(0.12);
+    //! Standoff this app starts holding, in metres below the canopy. Far enough out of the
+    //! DVL's 0.3 m blanking range to keep it reporting, close enough that the camera and the
+    //! lights still reach the ice. The loop itself is the inherited ALTITUDE mode, flown off
+    //! the upward DVL; Z cycles it and Q/E move it.
+    const sf::Scalar START_STANDOFF = sf::Scalar(2.0);
 
     //! Gap between a screen display and the window edge, in pixels.
     const unsigned int MARGIN = 10;
@@ -98,10 +92,19 @@ UnderIceTestApp::UnderIceTestApp(std::string dataDirPath, sf::RenderSettings s, 
       swath_(nullptr),
       fls_(nullptr),
       showFLS_(true),
-      camTilt_(2),
-      iceHold_(true),
-      holdDemand_(0)
+      camTilt_(2)
 {
+    //Start on the standoff rather than at whatever clearance the spawn happens to give. Without
+    //a vertical hold the scenario does not work unattended: the vehicle is +2.0 N buoyant, so it
+    //rises until it is touching the canopy, at which point the clearance is inside every upward
+    //sensor's blanking range and the ice readouts go blank. Flying a standoff is also what an
+    //under-ice survey does.
+    //
+    //Clearing SEED_ALTITUDE keeps the base class from overwriting this with the first fix.
+    verticalHold_ = VerticalHold::ALTITUDE;
+    altitudeSp_ = START_STANDOFF;
+    pendingSeed_ &= ~SEED_ALTITUDE;
+
     swathPlot_.resize(1);
     draftPlot_.resize(1);
 }
@@ -169,45 +172,6 @@ void UnderIceTestApp::ProcessInputs()
     BlueROV2TestApp::ProcessInputs();
 }
 
-//! Holds a fixed standoff below the ice, off the upward sounder.
-//!
-//! Without this the scenario does not really work unattended. The BlueROV2 Heavy is +2.0 N
-//! buoyant and has no depth hold, so from any starting depth it simply rises until it is
-//! touching the canopy - at which point the clearance is a few centimetres, far inside the
-//! sounder's blanking range, and every ice readout on the HUD goes blank. Flying a standoff
-//! is also what an under-ice survey actually does, and it is the natural thing to close
-//! around the upward sonar, so it doubles as a demonstration that the sensor works.
-//!
-//! Heave from the keys wins while a heave key is held: the loop only writes the demand when
-//! the pilot is not asking for one.
-void UnderIceTestApp::AugmentDemands()
-{
-    if(!iceHold_ || !vehicleControl_)
-    {
-        holdDemand_ = 0;
-        return;
-    }
-
-    const Uint8* keys = SDL_GetKeyboardState(nullptr);
-    if(keys[SDL_SCANCODE_Q] || keys[SDL_SCANCODE_E] || keys[SDL_SCANCODE_SPACE])
-    {
-        holdDemand_ = 0;
-        return;
-    }
-
-    sf::Scalar clearance = 0, draft = 0;
-    const Overhead state = ReadOverhead(clearance, draft);
-
-    if(state == Overhead::ICE)
-        holdDemand_ = std::max(-HOLD_LIMIT, std::min(HOLD_LIMIT, HOLD_GAIN * (HOLD_STANDOFF - clearance)));
-    else if(state == Overhead::NO_DATA)
-        holdDemand_ = 0;
-    else
-        holdDemand_ = HOLD_RECOVER; //nothing overhead, or too close to see: ease down and look again
-
-    heave_ = holdDemand_;
-}
-
 void UnderIceTestApp::KeyDown(SDL_Event* event)
 {
     //C tilts the bow camera. There is no separate up-looking camera on purpose - see the
@@ -217,13 +181,6 @@ void UnderIceTestApp::KeyDown(SDL_Event* event)
         camTilt_ = (camTilt_ + 1) % CAM_TILT_COUNT;
         ApplyCameraTilt();
         cInfo("Camera tilt: %.0f deg up.", CAM_TILT_DEG[camTilt_]);
-        return;
-    }
-
-    if(event->key.keysym.sym == SDLK_z)
-    {
-        iceHold_ = !iceHold_;
-        cInfo(iceHold_ ? "Ice standoff hold engaged." : "Ice standoff hold released.");
         return;
     }
 
@@ -344,12 +301,9 @@ void UnderIceTestApp::DoTelemetry()
         ty += 20.f;
     }
 
-    if(iceHold_)
-        snprintf(buf, sizeof(buf), "HOLD %.1f m [Z]   heave %+.2f", (double)HOLD_STANDOFF, (double)holdDemand_);
-    else
-        snprintf(buf, sizeof(buf), "HOLD: OFF [Z]");
-    getGUI()->DoLabel(tx, ty, std::string(buf));
-    ty += 20.f;
+    //The standoff itself is the inherited ALTITUDE mode and is annunciated on the autopilot
+    //panel in the right hand column, off the DVL. What belongs here is the draft instrument,
+    //which reads the Profiler and is a different measurement of a different thing.
 
     snprintf(buf, sizeof(buf), "SONAR: %s [F]   CAM TILT: %.0f deg up [C]",
              showFLS_ ? "ON" : "OFF", CAM_TILT_DEG[camTilt_]);
