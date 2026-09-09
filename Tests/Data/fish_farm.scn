@@ -1,0 +1,738 @@
+<?xml version="1.0"?>
+<!--
+    Norwegian salmon farm for the BlueROV2 Heavy, used by AquacultureTest.
+
+    A 400 x 400 m site on the Trondelag coast: three circular pens on a shared mooring grid
+    over a 66 m fjord basin, with the fjord wall rising to the shore along the west edge. The
+    vehicle is defined in bluerov2_heavy.scn and included unchanged at the bottom of this
+    file; the net-inspection payload is added from C++ in AquacultureTestManager (see WHY THE
+    PAYLOAD IS NOT HERE, below).
+
+    Frame convention is NED: X forward/north, Y starboard/east, Z DOWN. The water surface is
+    z = 0, so depth is POSITIVE z and structures above the waterline have NEGATIVE z.
+
+    ================================ THE SITE ================================
+        x in [-200, -192]     shore shelf, 5 m of water
+        x in [-192, -116]     the fjord wall, 5 -> 64 m, about 38 degrees
+        x in [-116, +200]     the basin, 64 -> 70 m of soft mud
+
+        pens at (0, -70), (0, 0), (0, +70)     hero pen is the middle one
+        feed barge at (0, -140)
+        vehicle spawn (-21.6, 0, 3)            2.5 m off the hero pen's net, bow on it
+
+    The row of pens runs along y, which is the fjord axis and the direction of the 0.30 m/s
+    tidal current. The vehicle spawns due SOUTH of the hero pen because bluerov2_heavy.scn
+    hard-codes rpy="0 0 0" on the robot's world transform (line 558) - the vehicle always
+    starts heading north, and adding a robot_rpy argument would change a file two other
+    demos share. Starting 2.5 m off the net with the bow already on it means NET HOLD can
+    engage itself on the first frame.
+
+    ============================ THE PEN, AND HOW IT IS BUILT ============================
+    A standard Norwegian plastic pen: a 120 m circumference collar, so 38.2 m across, with a
+    cylindrical net wall to 15 m and a conical bottom to 20 m at the axis.
+
+    THE NET IS REAL GEOMETRY, NOT A TEXTURE. Stonefish has no transparency of any kind -
+    LookType::TRANSPARENT is declared in OpenGLDataStructs.h and used nowhere, the underwater
+    material shader multiplies rgb by albedo.a and then forces a = 1.0
+    (materialUUv.frag:154), and CreateLook loads albedo textures with three channels so the
+    sampled alpha is always 1 anyway. A netting texture on a solid shell would therefore be an
+    opaque wall. The salmon are the point of a fish pen, so the twine is modelled.
+
+    Each object carries TWO meshes: the twine lattice for rendering, and a smooth low-poly
+    shell for physics. Without the shell the vehicle flies between the twines and every ray
+    the net profiler casts misses through a mesh opening. `<static type="model">` supports the
+    split directly (ScenarioParser.cpp:1048-1096) - note that inside `<physical>` and
+    `<visual>` the `<origin>` is read as the `<mesh>` element's NEXT SIBLING, so the order of
+    those two children is fixed.
+
+    The lattice is coarse and honest about it. Real salmon netting is 25 mm bar with 2.4 mm
+    twine, which over 3000 square metres of net is about three million meshes. make_fish_farm.py
+    coarsens the pitch and WIDENS THE TWINE TO PRESERVE SOLIDITY instead:
+
+        open fraction = (1 - d/lambda)^2,   Sn = 1 - open fraction = 0.1825 for clean netting
+
+    so the fraction of light the net passes - and therefore how grey it looks at range, which
+    is what an inspection actually judges - is exact, while a close-up shows meshes an order
+    of magnitude too large. The fouled band carries Sn = 0.35, which makes it visibly denser
+    as well as browner, and that is the correct physical signature of fouling.
+
+    Twine cross-section is a TRIANGULAR PRISM, not a flat ribbon. A ribbon lying in the net
+    surface has a radial normal, so flying ALONG the net - which is most of an inspection -
+    puts every strand edge-on and the net turns transparent exactly when it is being
+    inspected. A prism also avoids OpenGLContent::CheckAndRepairFaceVertexOrder, which flips a
+    triangle whose geometric normal opposes all three of its vertex normals: a back face built
+    by re-winding the same vertices is precisely that case, and the loader silently turns it
+    back into a coincident duplicate of the front face.
+
+    The pen is FOUR objects and not sixteen panels. There is no mesh cache in OpenGLContent -
+    BuildObject unconditionally creates a new VAO and VBO - and DrawObjects walks the whole
+    queue with no frustum culling, once for the main pass, once for the above-water redraw,
+    once per shadow cascade and once per spot light. Fewer, fatter objects win, and a merged
+    ring is smaller on disk than sixteen panels because it shares vertices across the seams.
+    The split that remains is by LOOK and by PHYSICS: a fouled top band, a clean lower band, a
+    single torn sector whose shell carries the matching hole, and the cone.
+
+    THE NET IS FROZEN. make_fish_farm.py bakes a steady deformation at the design current and
+    the shape does not respond to <current> at runtime. Real nets deform substantially, a
+    static mesh cannot, and baking is the honest option. If the current in this file is
+    changed, re-run the generator with --current; AquacultureTestManager warns at startup if
+    the two disagree.
+
+    ============================= THE WATERLINE =============================
+    Structures here DO cross z = 0 - the collar, the handrail, the buoys and the barge all
+    have freeboard, because a farm with no freeboard reads as a wreck.
+
+    under_ice.scn states that nothing may sit above z = 0 or the underwater material shader
+    blows it out white. That is true of the FIRST pass and not of the finished frame. When the
+    eye is above water, OpenGLPipeline draws every object in UNDERWATER mode, blends the ocean
+    surface over it weighted by the Fresnel term, and then REDRAWS everything in FULL mode
+    with depth testing (OpenGLPipeline.cpp:656-700). The redraw lands on exactly equal
+    logarithmic depth values and the global depth function is GL_LEQUAL, so the correct
+    above-water shading overwrites the blown-out pass. Submerged fragments are rejected
+    because the surface already wrote depth in front of them. From an underwater eye the
+    ocean backsurface (OpenGLFlatOcean.cpp:246) is opaque and always nearer than anything
+    above the surface, so freeboard is hidden rather than blown out - which is also what a
+    diver sees. FloatingTest has floated a hull across the waterline since before this fork.
+
+    Two rules survive:
+      - NOTHING MAY BE TANGENT TO z = 0. Every structure gets a definite crossing, so no facet
+        lies in the plane where the two regimes meet. The collar tubes are centred at
+        z = -0.25 and z = +0.25 with a 0.20 m radius.
+      - The vehicle's cameras must stay below the surface. OpenGLPipeline chooses its path
+        from the EYE POINT alone, so a camera at z = -0.05 renders the whole scene through
+        the above-water path and the picture pops.
+
+    <waves height="0.0"/> follows, but NOT for the reason under_ice.scn gives. With waves the
+    water level is a per-pixel FFT displacement oscillating about 0, and a collar that is a
+    FIXED body cannot heave with it - the sea would visibly saw through a rigid ring. The wave
+    path also runs a compute dispatch per view per frame, where the flat path's UpdateSurface
+    is empty. A sheltered fjord at slack water is a fair scene.
+
+    ========================= MATERIALS ARE ALSO SONAR REFLECTIVITY =========================
+    OpenGLFLS/SSS/MSIS shade an echo as clamp(dot(N, toEye), 0, 1) * restitution
+    (Library/shaders/sonarInput.frag), so a material's RESTITUTION IS ITS ACOUSTIC
+    REFLECTIVITY. It is derived here, from R = (Z2 - Z1)/(Z2 + Z1) with
+    Z_water = 1027 * 1482 = 1.522e6 Pa s/m:
+
+        NetTwine   PA6      1140 * 2620 = 2.99e6    R = 0.33
+        HDPE       collar    950 * 2430 = 2.31e6    R = 0.21
+        FjordMud            1400 * 1500 = 2.10e6    R = 0.16
+        Steel               7850 * 5900 = 4.63e7    R = 0.94  ->  CAPPED AT 0.85
+
+    Steel is capped because 0.94 is an absurd coefficient of restitution for a mechanical
+    contact and the barge and the anchors are things the vehicle can hit. under_ice.scn kept
+    its acoustic value and accepted a lively bounce off a keel; here the trade goes the other
+    way, because there is far more steel and the vehicle is far more likely to touch it.
+
+    Salmon are 0.90, which is a deliberate lie. A salmon is bright on sonar because of its gas
+    swimbladder, not its flesh - flesh alone would give R = 0.04. Stonefish has one number per
+    material and the swimbladder is what a real echo sees, so the swimbladder wins. It does not
+    matter for collisions: the fish are non-colliding.
+
+    ============================ KNOWN LIMITATIONS ============================
+    - A Terrain has ONE material, so the fjord wall is acoustically mud and the gassy,
+      acoustically bright deposition footprint under the pens exists only in the albedo. A
+      separate patch terrain was rejected: the seam is worse than the omission.
+    - <look uv_scale> is read for every static body but only PASSED ON for planes and terrain
+      (ScenarioParser.cpp:1097 and :1112). Model UVs must be baked into the .obj.
+    - The seabed look is textured, and that is load-bearing for more than appearance:
+      OpenGLContent::LoadTexture sets stbi_set_flip_vertically_on_load(true) and nothing ever
+      resets it, so whether the heightmap loads bottom-up depends on a texture having been
+      loaded first. <looks> is parsed before <static>, so it holds. If this look were ever
+      reduced to a flat colour the seabed would silently mirror in y.
+    - The net does not respond to the current, the collar does not heave, and the pens do not
+      rotate on their moorings. See THE NET IS FROZEN above.
+-->
+<scenario>
+	<solver>
+		<multithreading max_physics_threads="8"/>
+	</solver>
+
+	<environment>
+		<ned latitude="63.5" longitude="8.5"/>
+
+		<ocean>
+			<!-- Jerlov 0.30 is moderately turbid coastal water, roughly 10 m of visibility.
+			     A working salmon site in autumn is murkier than this; it is set where it is
+			     because the subject of the scene is 20 m across and has to be findable. -->
+			<water density="1026.0" jerlov="0.30" temperature="8.0"/>
+			<waves height="0.0"/>
+			<particles enabled="true"/>
+			<!-- The design current. THE NET IS BAKED AT THIS VALUE - see the header. -->
+			<current type="uniform">
+				<velocity xyz="0.0 0.30 0.0"/>
+			</current>
+		</ocean>
+
+		<atmosphere>
+			<sun azimuth="150.0" elevation="25.0"/>
+			<conditions temperature="9.0" pressure="101000.0" humidity="0.80"/>
+		</atmosphere>
+	</environment>
+
+	<materials>
+		<!-- Neutral is required by the included vehicle, and physical materials can only be
+		     defined in the MAIN file, never in an included one. -->
+		<material name="Neutral" density="1000.0" restitution="0.5"/>
+		<material name="NetTwine" density="1140.0" restitution="0.33"/>
+		<material name="HDPE" density="950.0" restitution="0.21"/>
+		<material name="Steel" density="7850.0" restitution="0.85"/>
+		<material name="FjordMud" density="1400.0" restitution="0.16"/>
+		<material name="MooringRope" density="1140.0" restitution="0.30"/>
+		<material name="Salmon" density="1050.0" restitution="0.90"/>
+		<!-- A foam-filled surface buoy: it has to float high, so its density is that of the
+		     whole buoy and not of its plastic skin. 0.75 for the acoustic reflectivity of a
+		     closed-cell foam float, which is nearly an air target. -->
+		<material name="BuoyFoam" density="180.0" restitution="0.75"/>
+		<friction_table>
+			<!-- Unlisted pairs default to 1.0/1.0 (MaterialManager.cpp:64), which is far too
+			     grippy for anything the vehicle touches, so every pair involving Neutral is
+			     listed. Wet nylon netting on a plastic hull is genuinely slippery. -->
+			<friction material1="Neutral" material2="Neutral" static="0.5" dynamic="0.2"/>
+			<friction material1="Neutral" material2="NetTwine" static="0.15" dynamic="0.10"/>
+			<friction material1="Neutral" material2="HDPE" static="0.25" dynamic="0.15"/>
+			<friction material1="Neutral" material2="Steel" static="0.30" dynamic="0.20"/>
+			<friction material1="Neutral" material2="FjordMud" static="0.50" dynamic="0.30"/>
+			<friction material1="Neutral" material2="MooringRope" static="0.30" dynamic="0.20"/>
+			<friction material1="Neutral" material2="Salmon" static="0.10" dynamic="0.05"/>
+			<friction material1="Neutral" material2="BuoyFoam" static="0.30" dynamic="0.20"/>
+			<friction material1="Steel" material2="FjordMud" static="0.60" dynamic="0.40"/>
+			<friction material1="HDPE" material2="FjordMud" static="0.40" dynamic="0.25"/>
+			<friction material1="MooringRope" material2="FjordMud" static="0.60" dynamic="0.40"/>
+			<friction material1="FjordMud" material2="FjordMud" static="0.90" dynamic="0.70"/>
+		</friction_table>
+	</materials>
+
+	<looks>
+		<!-- The site albedo maps ONCE over the whole 400 m at uv_scale 1.0, which is what
+		     carries the deposition footprint. The price is that there is no tiling normal map
+		     for the seabed - a look has one uv_scale shared by both textures - so everything
+		     finer than the 1.5 m height field is smooth-shaded. The footprint is the point of
+		     this seabed, so it wins. under_ice.scn made the opposite trade. -->
+		<look name="seabed" gray="1.0" roughness="0.95" texture="farm/seabed_albedo.png"/>
+		<look name="net_clean" rgb="0.30 0.33 0.31" roughness="0.75"/>
+		<look name="net_fouled" rgb="0.22 0.24 0.14" roughness="0.92"/>
+		<look name="hdpe_black" rgb="0.06 0.06 0.07" roughness="0.55" reflectivity="0.04"/>
+		<look name="hdpe_orange" rgb="0.75 0.30 0.05" roughness="0.55"/>
+		<look name="steel_paint" rgb="0.55 0.56 0.58" roughness="0.45" metalness="0.6"/>
+		<look name="rope" gray="1.0" roughness="0.90" texture="rope_color.jpg" normal_map="rope_normal.png"/>
+		<!-- The counter-shading is the texture's whole job: a salmon reads as a fish because
+		     of its dark back, silver flank and white belly, and a flat colour reads as a
+		     grey lozenge. Roughness is low because a wet fish is glossy. -->
+		<look name="salmon" gray="1.0" roughness="0.35" reflectivity="0.06" texture="farm/salmon.png"/>
+	</looks>
+
+	<!-- ================================ THE SEABED ================================
+	     scalex/scaley/height and the world z all come from make_fish_farm.py; paste them
+	     again after re-running it, do not hand-edit them. BLACK is DEEPEST here, which is the
+	     opposite of the ice canopy's convention because this terrain is not flipped. -->
+	<static name="Seabed" type="terrain">
+		<height_map filename="farm/bathymetry_16b.png"/>
+		<dimensions scalex="1.49813" scaley="1.49813" height="67.3399"/>
+		<material name="FjordMud"/>
+		<look name="seabed" uv_scale="1.0"/>
+		<world_transform xyz="0.0 0.0 70.6915" rpy="0.0 0.0 0.0"/>
+	</static>
+
+
+	<!-- ================================ THE HERO PEN ================================
+	     Four objects, not sixteen panels - see THE PEN in the header. Every one carries a
+	     twine mesh for rendering and a smooth shell for physics; without the shell the
+	     vehicle flies between the twines and every net-profiler ray misses through a mesh
+	     opening. Inside <physical> and <visual> the <origin> is read as the <mesh> element's
+	     NEXT SIBLING, so that order is not optional.
+
+	     The meshes are generated in pen-local x/y with ABSOLUTE z, and already carry the
+	     baked downstream deflection, so the world transform is a pure translation. -->
+	<static name="NetWallFouled" type="model">
+		<physical>
+			<mesh filename="farm/net_wall_fouled_phy.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</physical>
+		<visual>
+			<mesh filename="farm/net_wall_fouled_gra.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</visual>
+		<material name="NetTwine"/>
+		<look name="net_fouled"/>
+		<world_transform xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+	</static>
+
+	<static name="NetWallClean" type="model">
+		<physical>
+			<mesh filename="farm/net_wall_clean_phy.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</physical>
+		<visual>
+			<mesh filename="farm/net_wall_clean_gra.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</visual>
+		<material name="NetTwine"/>
+		<look name="net_clean"/>
+		<world_transform xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+	</static>
+
+	<!-- The torn sector. Its SHELL carries the same hole as its twine, so the vehicle can
+	     fly through the tear and the net profiler loses its return over it. Both holes come
+	     from one parameter in make_fish_farm.py; they cannot drift apart. -->
+	<static name="NetWallTorn" type="model">
+		<physical>
+			<mesh filename="farm/net_wall_torn_phy.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</physical>
+		<visual>
+			<mesh filename="farm/net_wall_torn_gra.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</visual>
+		<material name="NetTwine"/>
+		<look name="net_clean"/>
+		<world_transform xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+	</static>
+
+	<static name="NetCone" type="model">
+		<physical>
+			<mesh filename="farm/net_cone_phy.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</physical>
+		<visual>
+			<mesh filename="farm/net_cone_gra.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</visual>
+		<material name="NetTwine"/>
+		<look name="net_clean"/>
+		<world_transform xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+	</static>
+
+	<!-- ============================== THE NEIGHBOUR PENS ==============================
+	     70 m away, which is far beyond the visibility of this water, so they exist for the
+	     surface camera and for the sonar. Coarse netting at a 1.0 m pitch: a deliberate,
+	     documented level of detail, not an oversight. -->
+	<static name="NetSouthWall" type="model">
+		<physical>
+			<mesh filename="farm/net_lod_wall_phy.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</physical>
+		<visual>
+			<mesh filename="farm/net_lod_wall_gra.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</visual>
+		<material name="NetTwine"/>
+		<look name="net_clean"/>
+		<world_transform xyz="0.0 -70.0 0.0" rpy="0.0 0.0 0.0"/>
+	</static>
+
+	<static name="NetSouthCone" type="model">
+		<physical>
+			<mesh filename="farm/net_lod_cone_phy.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</physical>
+		<visual>
+			<mesh filename="farm/net_lod_cone_gra.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</visual>
+		<material name="NetTwine"/>
+		<look name="net_clean"/>
+		<world_transform xyz="0.0 -70.0 0.0" rpy="0.0 0.0 0.0"/>
+	</static>
+
+	<static name="NetNorthWall" type="model">
+		<physical>
+			<mesh filename="farm/net_lod_wall_phy.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</physical>
+		<visual>
+			<mesh filename="farm/net_lod_wall_gra.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</visual>
+		<material name="NetTwine"/>
+		<look name="net_clean"/>
+		<world_transform xyz="0.0 70.0 0.0" rpy="0.0 0.0 0.0"/>
+	</static>
+
+	<static name="NetNorthCone" type="model">
+		<physical>
+			<mesh filename="farm/net_lod_cone_phy.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</physical>
+		<visual>
+			<mesh filename="farm/net_lod_cone_gra.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</visual>
+		<material name="NetTwine"/>
+		<look name="net_clean"/>
+		<world_transform xyz="0.0 70.0 0.0" rpy="0.0 0.0 0.0"/>
+	</static>
+
+	<!-- ============================== THE PEN STRUCTURE ==============================
+	     The collar is what makes the site read as a farm from the surface, and it is the
+	     scene's main test of the above-water path: twin 400 mm HDPE tubes centred 60 mm
+	     PROUD of the waterline, with stanchions and a handrail 0.9 m above it. Its physics
+	     is the two tubes only, at a quarter of the resolution - nothing else is reachable
+	     by a vehicle that has to stay below the surface.
+
+	     The sinker tube, the lifting straps and the cone ropes all carry the same baked
+	     downstream deflection as the net, so the bottom ring is 1.7 m out of plumb and the
+	     whole lower net leans with it. That offset IS the visible signature of the current. -->
+	<static name="CollarHero" type="model">
+		<physical>
+			<mesh filename="farm/collar_phy.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</physical>
+		<visual>
+			<mesh filename="farm/collar.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</visual>
+		<material name="HDPE"/>
+		<look name="hdpe_black"/>
+		<world_transform xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+	</static>
+	<static name="SinkerTubeHero" type="model">
+		<physical>
+			<mesh filename="farm/sinker_tube.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</physical>
+		<material name="HDPE"/>
+		<look name="hdpe_black"/>
+		<world_transform xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+	</static>
+
+	<static name="CollarSouth" type="model">
+		<physical>
+			<mesh filename="farm/collar_phy.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</physical>
+		<visual>
+			<mesh filename="farm/collar.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</visual>
+		<material name="HDPE"/>
+		<look name="hdpe_black"/>
+		<world_transform xyz="0.0 -70.0 0.0" rpy="0.0 0.0 0.0"/>
+	</static>
+	<static name="SinkerTubeSouth" type="model">
+		<physical>
+			<mesh filename="farm/sinker_tube.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</physical>
+		<material name="HDPE"/>
+		<look name="hdpe_black"/>
+		<world_transform xyz="0.0 -70.0 0.0" rpy="0.0 0.0 0.0"/>
+	</static>
+
+	<static name="CollarNorth" type="model">
+		<physical>
+			<mesh filename="farm/collar_phy.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</physical>
+		<visual>
+			<mesh filename="farm/collar.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</visual>
+		<material name="HDPE"/>
+		<look name="hdpe_black"/>
+		<world_transform xyz="0.0 70.0 0.0" rpy="0.0 0.0 0.0"/>
+	</static>
+	<static name="SinkerTubeNorth" type="model">
+		<physical>
+			<mesh filename="farm/sinker_tube.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</physical>
+		<material name="HDPE"/>
+		<look name="hdpe_black"/>
+		<world_transform xyz="0.0 70.0 0.0" rpy="0.0 0.0 0.0"/>
+	</static>
+
+	<static name="PenRopes" type="model">
+		<physical>
+			<mesh filename="farm/pen_ropes.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</physical>
+		<material name="MooringRope"/>
+		<look name="rope"/>
+		<world_transform xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+	</static>
+
+	<!-- Mortalities settle into this cone and are airlifted up the lift-up pipe, which is
+	     the only structure crossing the middle of the pen. Both are things an ROV is
+	     actually sent down to look at. -->
+	<static name="Mortality" type="model">
+		<physical>
+			<mesh filename="farm/mortality.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</physical>
+		<material name="HDPE"/>
+		<look name="hdpe_black"/>
+		<world_transform xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+	</static>
+
+	<!-- ============================== THE FARM ==============================
+	     The feed barge straddles the waterline by design - 2.5 m of draft and 2.0 m of
+	     freeboard - which makes it the scene's clearest check that above-water geometry
+	     renders correctly rather than blowing out white. -->
+	<static name="FeedBarge" type="model">
+		<physical>
+			<mesh filename="farm/barge_phy.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</physical>
+		<visual>
+			<mesh filename="farm/barge.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</visual>
+		<material name="Steel"/>
+		<look name="steel_paint"/>
+		<world_transform xyz="0.0 -145.0 0.0" rpy="0.0 0.0 0.0"/>
+	</static>
+
+	<static name="FeedHose" type="model">
+		<physical>
+			<mesh filename="farm/feed_hose.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</physical>
+		<material name="HDPE"/>
+		<look name="hdpe_black"/>
+		<world_transform xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+	</static>
+
+	<!-- The mooring frame at 10 m and the eight dead anchor lines. Four more lines are
+	     live <cable> soft bodies further down this file: they hang in a real catenary and
+	     lean with the current, and they are the four the vehicle flies past. A CableEntity
+	     is solved every physics step, so four is a demonstration and forty is a stall. -->
+	<static name="MooringFrame" type="model">
+		<physical>
+			<mesh filename="farm/moorings.obj" scale="1.0"/>
+			<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		</physical>
+		<material name="MooringRope"/>
+		<look name="rope"/>
+		<world_transform xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+	</static>
+
+	<!-- ============================ THE MOORING ============================
+	     Anchor positions and depths come from make_fish_farm.py, which samples its own
+	     bathymetry, so an anchor cannot end up buried or hanging in mid-water. Paste them
+	     again after re-running the generator. -->
+	<static name="Anchor0" type="box">
+		<dimensions xyz="2.6 2.6 1.2"/>
+		<material name="Steel"/><look name="steel_paint" uv_mode="2"/>
+		<world_transform xyz="-97.6 -168.6 63.14" rpy="0.0 0.0 0.0"/>
+	</static>
+	<static name="Anchor1" type="box">
+		<dimensions xyz="2.6 2.6 1.2"/>
+		<material name="Steel"/><look name="steel_paint" uv_mode="2"/>
+		<world_transform xyz="97.6 -168.6 68.29" rpy="0.0 0.0 0.0"/>
+	</static>
+	<static name="Anchor2" type="box">
+		<dimensions xyz="2.6 2.6 1.2"/>
+		<material name="Steel"/><look name="steel_paint" uv_mode="2"/>
+		<world_transform xyz="-124.0 -35.0 62.10" rpy="0.0 0.0 0.0"/>
+	</static>
+	<static name="Anchor3" type="box">
+		<dimensions xyz="2.6 2.6 1.2"/>
+		<material name="Steel"/><look name="steel_paint" uv_mode="2"/>
+		<world_transform xyz="124.0 -35.0 69.01" rpy="0.0 0.0 0.0"/>
+	</static>
+	<static name="Anchor4" type="box">
+		<dimensions xyz="2.6 2.6 1.2"/>
+		<material name="Steel"/><look name="steel_paint" uv_mode="2"/>
+		<world_transform xyz="-124.0 35.0 58.06" rpy="0.0 0.0 0.0"/>
+	</static>
+	<static name="Anchor5" type="box">
+		<dimensions xyz="2.6 2.6 1.2"/>
+		<material name="Steel"/><look name="steel_paint" uv_mode="2"/>
+		<world_transform xyz="124.0 35.0 69.21" rpy="0.0 0.0 0.0"/>
+	</static>
+	<static name="Anchor6" type="box">
+		<dimensions xyz="2.6 2.6 1.2"/>
+		<material name="Steel"/><look name="steel_paint" uv_mode="2"/>
+		<world_transform xyz="-97.6 168.6 63.51" rpy="0.0 0.0 0.0"/>
+	</static>
+	<static name="Anchor7" type="box">
+		<dimensions xyz="2.6 2.6 1.2"/>
+		<material name="Steel"/><look name="steel_paint" uv_mode="2"/>
+		<world_transform xyz="97.6 168.6 67.78" rpy="0.0 0.0 0.0"/>
+	</static>
+
+	<cable name="AnchorLine2" physics="submerged" buoyant="true">
+		<geometry diameter="0.048" number_of_segments="40"/>
+		<material name="MooringRope" stretch_factor="0.02"/>
+		<look name="rope" uv_scale="20.0"/>
+		<first_end position="-124.0 -35.0 62.30" anchor="world"/>
+		<second_end position="-34.0 -35.0 10.00" anchor="world"/>
+	</cable>
+	<cable name="AnchorLine3" physics="submerged" buoyant="true">
+		<geometry diameter="0.048" number_of_segments="40"/>
+		<material name="MooringRope" stretch_factor="0.02"/>
+		<look name="rope" uv_scale="20.0"/>
+		<first_end position="124.0 -35.0 69.21" anchor="world"/>
+		<second_end position="34.0 -35.0 10.00" anchor="world"/>
+	</cable>
+	<cable name="AnchorLine4" physics="submerged" buoyant="true">
+		<geometry diameter="0.048" number_of_segments="40"/>
+		<material name="MooringRope" stretch_factor="0.02"/>
+		<look name="rope" uv_scale="20.0"/>
+		<first_end position="-124.0 35.0 58.26" anchor="world"/>
+		<second_end position="-34.0 35.0 10.00" anchor="world"/>
+	</cable>
+	<cable name="AnchorLine5" physics="submerged" buoyant="true">
+		<geometry diameter="0.048" number_of_segments="40"/>
+		<material name="MooringRope" stretch_factor="0.02"/>
+		<look name="rope" uv_scale="20.0"/>
+		<first_end position="124.0 35.0 69.41" anchor="world"/>
+		<second_end position="34.0 35.0 10.00" anchor="world"/>
+	</cable>
+
+	<dynamic name="Buoy0" type="sphere" physics="floating" buoyant="true">
+		<dimensions radius="0.70"/>
+		<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		<material name="BuoyFoam"/><look name="hdpe_orange"/>
+		<world_transform xyz="-34.0 -105.0 -0.35" rpy="0.0 0.0 0.0"/>
+	</dynamic>
+	<cable name="Pennant0" physics="submerged" buoyant="false">
+		<geometry diameter="0.040" number_of_segments="8"/>
+		<material name="MooringRope" stretch_factor="0.02"/>
+		<look name="rope" uv_scale="6.0"/>
+		<first_end position="-34.0 -105.0 10.00" anchor="world"/>
+		<second_end position="-34.0 -105.0 -0.35" anchor="dynamic">
+			<body name="Buoy0"/>
+		</second_end>
+	</cable>
+	<dynamic name="Buoy1" type="sphere" physics="floating" buoyant="true">
+		<dimensions radius="0.70"/>
+		<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		<material name="BuoyFoam"/><look name="hdpe_orange"/>
+		<world_transform xyz="34.0 -105.0 -0.35" rpy="0.0 0.0 0.0"/>
+	</dynamic>
+	<cable name="Pennant1" physics="submerged" buoyant="false">
+		<geometry diameter="0.040" number_of_segments="8"/>
+		<material name="MooringRope" stretch_factor="0.02"/>
+		<look name="rope" uv_scale="6.0"/>
+		<first_end position="34.0 -105.0 10.00" anchor="world"/>
+		<second_end position="34.0 -105.0 -0.35" anchor="dynamic">
+			<body name="Buoy1"/>
+		</second_end>
+	</cable>
+	<dynamic name="Buoy2" type="sphere" physics="floating" buoyant="true">
+		<dimensions radius="0.70"/>
+		<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		<material name="BuoyFoam"/><look name="hdpe_orange"/>
+		<world_transform xyz="-34.0 -35.0 -0.35" rpy="0.0 0.0 0.0"/>
+	</dynamic>
+	<cable name="Pennant2" physics="submerged" buoyant="false">
+		<geometry diameter="0.040" number_of_segments="8"/>
+		<material name="MooringRope" stretch_factor="0.02"/>
+		<look name="rope" uv_scale="6.0"/>
+		<first_end position="-34.0 -35.0 10.00" anchor="world"/>
+		<second_end position="-34.0 -35.0 -0.35" anchor="dynamic">
+			<body name="Buoy2"/>
+		</second_end>
+	</cable>
+	<dynamic name="Buoy3" type="sphere" physics="floating" buoyant="true">
+		<dimensions radius="0.70"/>
+		<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		<material name="BuoyFoam"/><look name="hdpe_orange"/>
+		<world_transform xyz="34.0 -35.0 -0.35" rpy="0.0 0.0 0.0"/>
+	</dynamic>
+	<cable name="Pennant3" physics="submerged" buoyant="false">
+		<geometry diameter="0.040" number_of_segments="8"/>
+		<material name="MooringRope" stretch_factor="0.02"/>
+		<look name="rope" uv_scale="6.0"/>
+		<first_end position="34.0 -35.0 10.00" anchor="world"/>
+		<second_end position="34.0 -35.0 -0.35" anchor="dynamic">
+			<body name="Buoy3"/>
+		</second_end>
+	</cable>
+	<dynamic name="Buoy4" type="sphere" physics="floating" buoyant="true">
+		<dimensions radius="0.70"/>
+		<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		<material name="BuoyFoam"/><look name="hdpe_orange"/>
+		<world_transform xyz="-34.0 35.0 -0.35" rpy="0.0 0.0 0.0"/>
+	</dynamic>
+	<cable name="Pennant4" physics="submerged" buoyant="false">
+		<geometry diameter="0.040" number_of_segments="8"/>
+		<material name="MooringRope" stretch_factor="0.02"/>
+		<look name="rope" uv_scale="6.0"/>
+		<first_end position="-34.0 35.0 10.00" anchor="world"/>
+		<second_end position="-34.0 35.0 -0.35" anchor="dynamic">
+			<body name="Buoy4"/>
+		</second_end>
+	</cable>
+	<dynamic name="Buoy5" type="sphere" physics="floating" buoyant="true">
+		<dimensions radius="0.70"/>
+		<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		<material name="BuoyFoam"/><look name="hdpe_orange"/>
+		<world_transform xyz="34.0 35.0 -0.35" rpy="0.0 0.0 0.0"/>
+	</dynamic>
+	<cable name="Pennant5" physics="submerged" buoyant="false">
+		<geometry diameter="0.040" number_of_segments="8"/>
+		<material name="MooringRope" stretch_factor="0.02"/>
+		<look name="rope" uv_scale="6.0"/>
+		<first_end position="34.0 35.0 10.00" anchor="world"/>
+		<second_end position="34.0 35.0 -0.35" anchor="dynamic">
+			<body name="Buoy5"/>
+		</second_end>
+	</cable>
+	<dynamic name="Buoy6" type="sphere" physics="floating" buoyant="true">
+		<dimensions radius="0.70"/>
+		<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		<material name="BuoyFoam"/><look name="hdpe_orange"/>
+		<world_transform xyz="-34.0 105.0 -0.35" rpy="0.0 0.0 0.0"/>
+	</dynamic>
+	<cable name="Pennant6" physics="submerged" buoyant="false">
+		<geometry diameter="0.040" number_of_segments="8"/>
+		<material name="MooringRope" stretch_factor="0.02"/>
+		<look name="rope" uv_scale="6.0"/>
+		<first_end position="-34.0 105.0 10.00" anchor="world"/>
+		<second_end position="-34.0 105.0 -0.35" anchor="dynamic">
+			<body name="Buoy6"/>
+		</second_end>
+	</cable>
+	<dynamic name="Buoy7" type="sphere" physics="floating" buoyant="true">
+		<dimensions radius="0.70"/>
+		<origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+		<material name="BuoyFoam"/><look name="hdpe_orange"/>
+		<world_transform xyz="34.0 105.0 -0.35" rpy="0.0 0.0 0.0"/>
+	</dynamic>
+	<cable name="Pennant7" physics="submerged" buoyant="false">
+		<geometry diameter="0.040" number_of_segments="8"/>
+		<material name="MooringRope" stretch_factor="0.02"/>
+		<look name="rope" uv_scale="6.0"/>
+		<first_end position="34.0 105.0 10.00" anchor="world"/>
+		<second_end position="34.0 105.0 -0.35" anchor="dynamic">
+			<body name="Buoy7"/>
+		</second_end>
+	</cable>
+
+	<!-- ============================== THE PEN LIGHTS ==============================
+	     Submerged photoperiod LEDs, two of them at 9 m, hung inside the pen. They are real
+	     equipment - blue-green light at depth suppresses early maturation, so every
+	     Norwegian site runs them through the winter - and they are also what makes the
+	     inside of the pen worth looking at.
+
+	     POINT lights, deliberately. OpenGLPipeline bakes a shadowmap for every active light
+	     each frame, but OpenGLLight::BakeShadowmap is a no-op and only OpenGLSpotLight
+	     overrides it: a spot light therefore costs a whole extra pass over the scene and a
+	     point light costs nothing. The vehicle's two Lumens already pay that twice. -->
+	<light name="PenLight0">
+		<specs illuminance="12000.0" radius="0.12"/>
+		<color rgb="0.42 0.78 1.0"/>
+		<world_transform xyz="6.36 6.36 9.00" rpy="0.0 0.0 0.0"/>
+	</light>
+
+	<light name="PenLight1">
+		<specs illuminance="12000.0" radius="0.12"/>
+		<color rgb="0.42 0.78 1.0"/>
+		<world_transform xyz="-6.36 6.36 9.00" rpy="0.0 0.0 0.0"/>
+	</light>
+
+
+	<!-- ============================== THE VEHICLE ==============================
+	     All three arguments are required: the parser only substitutes $(arg ...) when the
+	     include passes at least one, and bluerov2_heavy.scn defines no defaults.
+	     dvl_up="0" points the DVL at the seabed, 45 m below - out of range for altitude hold
+	     over the pen, which is why this demo flies depth rather than altitude. -->
+	<include file="bluerov2_heavy.scn">
+		<arg name="robot_name" value="BLUEROV2"/>
+		<arg name="robot_position" value="-21.6 0.0 3.0"/>
+		<arg name="dvl_up" value="0"/>
+	</include>
+</scenario>

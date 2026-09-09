@@ -41,6 +41,12 @@ add_executable(UnderIceTest UnderIceTest/main.cpp UnderIceTest/UnderIceTestApp.c
                             BlueROV2Test/BlueROV2TestApp.cpp)
 target_link_libraries(UnderIceTest Stonefish_test)
 
+# Reuses BlueROV2TestApp the same way UnderIceTest does.
+add_executable(AquacultureTest AquacultureTest/main.cpp AquacultureTest/AquacultureTestApp.cpp
+                               AquacultureTest/AquacultureTestManager.cpp
+                               BlueROV2Test/BlueROV2TestApp.cpp)
+target_link_libraries(AquacultureTest Stonefish_test)
+
 if(WIN32)
     # Copy the runtime DLLs next to the executables, so they can be started without the MSYS2
     # ucrt64 bin directory on PATH, and the directory can be moved to a machine without MSYS2.
@@ -55,6 +61,6 @@ if(WIN32)
     add_dependencies(BundleRuntimeDLLs
         ConsoleTest CameraTest FallingTest FloatingTest FlyingTest JointsTest
         SlidingTest UnderwaterTest FluidDynamicsTest LearningTest CableTest
-        BlueROV2Test UnderIceTest
+        BlueROV2Test UnderIceTest AquacultureTest
     )
 endif()
